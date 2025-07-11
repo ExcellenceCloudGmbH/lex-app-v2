@@ -39,10 +39,15 @@ class ModelStructureObtainView(APIView):
 
     def get(self, request, *args, **kwargs):
         user = request.user
-
-        # 1) copy the raw tree
+        # keycloak_openid = KeycloakOpenID(server_url="https://exc-testing.com",
+        #                                  realm_name="lex",
+        #                                  client_id="LEX_LOCAL_ENV",
+        #                                  client_secret_key="O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF",
+        #                                  verify=False)
+        # permissions = keycloak_openid.uma_permissions(token=request.session["oidc_access_token"])
+        # # 1) copy the raw tree
         structure = copy.deepcopy(self.get_model_structure_func())
-        # 2) prune unauthorized
+        # # 2) prune unauthorized
         self.delete_restricted_nodes_from_model_structure(structure, user)
 
         # 3) annotate with serializers, but only on real model nodes

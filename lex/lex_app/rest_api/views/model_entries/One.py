@@ -19,6 +19,10 @@ from lex.lex_app.rest_api.views.model_entries.mixins.DestroyOneWithPayloadMixin 
 from lex.lex_app.rest_api.views.model_entries.mixins.ModelEntryProviderMixin import (
     ModelEntryProviderMixin,
 )
+from rest_framework.permissions import IsAuthenticated
+from lex.lex_app.rest_api.permission_classes.KeycloakUMAPermission import (
+    KeycloakUMAPermission,
+)
 
 
 class OneModelEntry(
@@ -28,6 +32,8 @@ class OneModelEntry(
     RetrieveUpdateDestroyAPIView,
     CreateAPIView,
 ):
+    permission_classes = [IsAuthenticated, KeycloakUMAPermission]
+
     def create(self, request, *args, **kwargs):
         model_container = self.kwargs["model_container"]
 

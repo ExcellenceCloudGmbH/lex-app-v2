@@ -15,17 +15,24 @@ Including another URLconf
 """
 import os
 
-from django.urls import path, re_path
+from django.urls import path, re_path, include
 
 from react.views import serve_react
 from . import settings, views
 from .ProcessAdminSettings import processAdminSite, adminSite
+from lex.lex_app.rest_api.views.authentication.UserAPIView import UserAPIView
 
-url_prefix = os.getenv("DJANGO_BASE_PATH") if os.getenv("DJANGO_BASE_PATH") is not None else ""
+url_prefix = (
+    os.getenv("DJANGO_BASE_PATH") if os.getenv("DJANGO_BASE_PATH") is not None else ""
+)
 
 urlpatterns = [
-    path('health', views.HealthCheck.as_view(), name='health_view'),
-    path(url_prefix + 'admin/', adminSite.urls),
+    path("health", views.HealthCheck.as_view(), name="health_view"),
+    path("api/user/", UserAPIView.as_view(), name="api-user"),
+    path(url_prefix + "admin/", adminSite.urls),
     path(url_prefix, processAdminSite.urls),
-    re_path(r"^(?P<path>.*)$", serve_react, {"document_root": settings.REACT_APP_BUILD_PATH}),
+    path("oidc/", include("mozilla_django_oidc.urls")),
+    re_path(
+        r"^(?P<path>.*)$", serve_react, {"document_root": settings.REACT_APP_BUILD_PATH}
+    ),
 ]
