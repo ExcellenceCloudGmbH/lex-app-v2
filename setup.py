@@ -107,10 +107,10 @@ class CustomInstallCommand(install):
             pth_file = site_packages / f"{package_name}_intellij_fix.pth"
 
             with open(pth_file, 'w') as f:
-                f.write(str(project_root) + '\n')
+                f.write(str(project_root.parent) + '\n')
 
             print(f"✅ IntelliJ linter fix applied!")
-            print(f"   Added: {project_root}")
+            print(f"   Added: {project_root.parent}")
             print(f"   To: {pth_file}")
 
         except Exception as e:
