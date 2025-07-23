@@ -54,13 +54,12 @@ class CustomInstallCommand(install):
             print(f"📁 Project root: {project_root}")
             print(f"🐍 Virtual env: {venv_path}")
 
-            # Method 1: Create .pth file (for Python runtime)
-            self._create_pth_file(venv_path, package_name, project_root, platform)
-
-            # Method 2: Update IntelliJ configuration (for static analysis)
-            self._update_intellij_config(project_root, venv_path, platform)
-
-            print("✅ IntelliJ linter fix applied!")
+            # Update IntelliJ configuration (for static analysis)
+            if self._update_intellij_config(project_root, venv_path, platform):
+                print("✅ IntelliJ linter fix applied!")
+            else:
+                print("⚠ IntelliJ linter fix could not be applied - no matching configuration found")
+                print("  ℹ️ Tip: Make sure PyCharm is using the correct virtual environment")
 
         except Exception as e:
             print(f"⚠ IntelliJ linter fix failed: {e}")
@@ -107,39 +106,6 @@ class CustomInstallCommand(install):
             project_root = venv_path.parent
 
         return str(project_root), str(venv_path)
-
-    def _create_pth_file(self, venv_path, package_name, project_root, platform):
-        """Create .pth file in virtual environment."""
-        try:
-            venv_path = Path(venv_path)
-
-            # Find site-packages directory based on platform
-            site_packages_paths = []
-
-            if platform == 'windows':
-                site_packages_paths = [
-                    venv_path / "Lib" / "site-packages",
-                    venv_path / f"Lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
-                ]
-            else:
-                site_packages_paths = [
-                    venv_path / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
-                ]
-
-            for site_packages in site_packages_paths:
-                if site_packages.exists():
-                    pth_file = site_packages / f"{package_name}_intellij_fix.pth"
-                    with open(pth_file, 'w') as f:
-                        f.write(project_root + '\n')
-                    print(f"  ✅ Created .pth file: {pth_file}")
-                    return True
-
-            print("  ⚠ Could not find site-packages directory")
-            return False
-
-        except Exception as e:
-            print(f"  ⚠ Could not create .pth file: {e}")
-            return False
 
     def _update_intellij_config(self, project_root, venv_path, platform):
         """Update IntelliJ configuration files."""
@@ -217,21 +183,40 @@ class CustomInstallCommand(install):
 
             # Find interpreter that matches our virtual environment
             updated = False
+            print(f"  🔍 Looking for venv path containing: {venv_path_search}")
+
             for jdk in root.findall(".//jdk"):
                 home_path = jdk.find("homePath")
-                if home_path is not None and venv_path_search in home_path.get("value", ""):
+                name = jdk.find("name")
 
-                    # Add to classPath
-                    class_path = jdk.find(".//classPath/root[@type='composite']")
-                    if class_path is not None:
-                        # Check if already exists
-                        exists = any(r.get("url") == intellij_path for r in class_path.findall("root[@type='simple']"))
+                if home_path is not None and name is not None:
+                    home_value = home_path.get("value", "")
+                    name_value = name.get("value", "")
 
-                        if not exists:
-                            new_root = ET.SubElement(class_path, "root")
-                            new_root.set("url", intellij_path)
-                            new_root.set("type", "simple")
-                            updated = True
+                    print(f"  👀 Checking interpreter: {name_value}")
+                    print(f"      Path: {home_value}")
+
+                    # Match any interpreter that uses our virtual environment
+                    if venv_path_search in home_value:
+
+                        print(f"  ✅ Found matching interpreter: {name_value}")
+
+                        # Add to classPath
+                        class_path = jdk.find(".//classPath/root[@type='composite']")
+                        if class_path is not None:
+                            # Check if already exists
+                            exists = any(
+                                r.get("url") == intellij_path for r in class_path.findall("root[@type='simple']"))
+
+                            if not exists:
+                                new_root = ET.SubElement(class_path, "root")
+                                new_root.set("url", intellij_path)
+                                new_root.set("type", "simple")
+                                print(f"  📝 Added path to classPath: {intellij_path}")
+                                updated = True
+                            else:
+                                print(f"  ℹ️ Path already exists in classPath: {intellij_path}")
+                                updated = True  # Consider it updated if path already exists
 
             if updated:
                 # Save with proper formatting
