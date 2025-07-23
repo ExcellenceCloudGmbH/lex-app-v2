@@ -1,6 +1,7 @@
 import os
 import shutil
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from setuptools import setup, find_packages
@@ -12,30 +13,19 @@ with open('requirements.txt') as f:
 
 class CustomInstallCommand(install):
     def run(self):
-        print("🚀 CustomInstallCommand.run() called!")
         # First, run the standard installation
         install.run(self)
-        print("✅ Standard installation completed")
 
         # Now handle the custom installation of other_directory
-        print("📁 Attempting to move other_directory...")
-        try:
-            self.move_other_directory()
-        except Exception as e:
-            print(f"⚠ move_other_directory failed: {e}")
+        self.move_other_directory()
 
-        # Fix IntelliJ linter by adding parent directory to Python path
-        print("🔧 Attempting IntelliJ linter fix...")
+        # Fix IntelliJ linter across all platforms
         self.fix_intellij_linter()
-        print("🏁 CustomInstallCommand.run() finished!")
 
     def move_other_directory(self):
         # Define the source and target paths
         source = os.path.join(os.path.dirname(__file__), 'lex', 'generic_app')
         target = os.path.join(os.path.dirname(self.install_lib), 'generic_app')
-
-        print(f"📂 Looking for source: {source}")
-        print(f"📂 Target would be: {target}")
 
         # Only move if source exists
         if os.path.exists(source):
@@ -48,75 +38,211 @@ class CustomInstallCommand(install):
             print(f'⚠ Source directory not found: {source} - skipping move')
 
     def fix_intellij_linter(self):
-        """Add project root to virtual environment's Python path via .pth file."""
+        """Cross-platform IntelliJ linter fix."""
         try:
-            import site
+            print("🔧 Applying IntelliJ linter fix...")
 
-            # Find virtual environment site-packages
-            if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
-                python_version = f"python{sys.version_info.major}.{sys.version_info.minor}"
-                site_packages = Path(sys.prefix) / "lib" / python_version / "site-packages"
-            else:
-                site_packages_list = site.getsitepackages() if hasattr(site, 'getsitepackages') else []
-                if site_packages_list:
-                    site_packages = Path(site_packages_list[0])
-                else:
-                    site_packages = Path(site.getusersitepackages())
+            # Detect platform
+            platform = self._detect_platform()
+            print(f"📍 Platform: {platform}")
 
-            print(f"🎯 Target site-packages: {site_packages}")
+            # Find project structure
+            project_root, venv_path = self._find_project_structure()
+            package_name = self._get_package_name()
 
-            # Find the actual project root by looking outside the virtual environment
-            # The virtual environment is usually inside the project or the project is the parent
-            venv_path = Path(sys.prefix)
-            package_name = next((pkg for pkg in find_packages() if '.' not in pkg), 'project')
+            print(f"📦 Package: {package_name}")
+            print(f"📁 Project root: {project_root}")
+            print(f"🐍 Virtual env: {venv_path}")
 
-            print(f"📦 Package name: {package_name}")
-            print(f"🔍 Virtual env path: {venv_path}")
+            # Method 1: Create .pth file (for Python runtime)
+            self._create_pth_file(venv_path, package_name, project_root, platform)
 
-            # Method 1: Check if venv is inside project (most common case)
-            project_root = None
-            test_path = venv_path.parent
+            # Method 2: Update IntelliJ configuration (for static analysis)
+            self._update_intellij_config(project_root, venv_path, platform)
 
-            # Look for the project directory that contains both the venv and the package
-            while test_path != test_path.parent and not project_root:
-                # Check if this directory contains the package
-                if (test_path / package_name).exists() and (test_path / package_name / '__init__.py').exists():
-                    project_root = test_path
-                    break
-                test_path = test_path.parent
-
-            # Method 2: If venv name suggests it's inside project (e.g., .venv, venv)
-            if not project_root and venv_path.name in ['.venv', 'venv', 'env']:
-                potential_root = venv_path.parent
-                if (potential_root / package_name).exists() and (
-                        potential_root / package_name / '__init__.py').exists():
-                    project_root = potential_root
-
-            # Method 3: Fallback - use the parent of venv
-            if not project_root:
-                project_root = venv_path.parent
-
-            print(f"📁 Detected project root: {project_root}")
-
-            # Ensure site-packages directory exists
-            if not site_packages.exists():
-                print(f"⚠ Site-packages doesn't exist: {site_packages}")
-                return
-
-            # Create .pth file
-            pth_file = site_packages / f"{package_name}_intellij_fix.pth"
-
-            with open(pth_file, 'w') as f:
-                f.write(str(project_root.parent) + '\n')
-
-            print(f"✅ IntelliJ linter fix applied!")
-            print(f"   Added: {project_root.parent}")
-            print(f"   To: {pth_file}")
+            print("✅ IntelliJ linter fix applied!")
 
         except Exception as e:
-            import traceback
-            print(f"❌ IntelliJ linter fix failed: {e}")
-            print(f"   Traceback: {traceback.format_exc()}")
+            print(f"⚠ IntelliJ linter fix failed: {e}")
+
+    def _detect_platform(self):
+        """Detect the current platform."""
+        if os.name == 'nt':
+            return 'windows'
+        elif sys.platform == 'darwin':
+            return 'macos'
+        else:
+            return 'linux'
+
+    def _get_package_name(self):
+        """Get the main package name."""
+        packages = find_packages()
+        return next((pkg for pkg in packages if '.' not in pkg), 'project')
+
+    def _find_project_structure(self):
+        """Find project root and virtual environment."""
+        venv_path = Path(sys.prefix)
+
+        # Find project root - look for the directory containing the main package
+        package_name = self._get_package_name()
+
+        # Walk up from venv to find project root
+        test_path = venv_path.parent
+        project_root = None
+
+        while test_path != test_path.parent:
+            if (test_path / package_name).exists() and (test_path / package_name / '__init__.py').exists():
+                project_root = test_path
+                break
+            test_path = test_path.parent
+
+        # Fallback methods
+        if not project_root:
+            if venv_path.name in ['.venv', 'venv', 'env']:
+                potential_root = venv_path.parent
+                if (potential_root / package_name).exists():
+                    project_root = potential_root
+
+        if not project_root:
+            project_root = venv_path.parent
+
+        return str(project_root), str(venv_path)
+
+    def _create_pth_file(self, venv_path, package_name, project_root, platform):
+        """Create .pth file in virtual environment."""
+        try:
+            venv_path = Path(venv_path)
+
+            # Find site-packages directory based on platform
+            site_packages_paths = []
+
+            if platform == 'windows':
+                site_packages_paths = [
+                    venv_path / "Lib" / "site-packages",
+                    venv_path / f"Lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+                ]
+            else:
+                site_packages_paths = [
+                    venv_path / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+                ]
+
+            for site_packages in site_packages_paths:
+                if site_packages.exists():
+                    pth_file = site_packages / f"{package_name}_intellij_fix.pth"
+                    with open(pth_file, 'w') as f:
+                        f.write(project_root + '\n')
+                    print(f"  ✅ Created .pth file: {pth_file}")
+                    return True
+
+            print("  ⚠ Could not find site-packages directory")
+            return False
+
+        except Exception as e:
+            print(f"  ⚠ Could not create .pth file: {e}")
+            return False
+
+    def _update_intellij_config(self, project_root, venv_path, platform):
+        """Update IntelliJ configuration files."""
+        try:
+            config_dirs = self._find_intellij_config_dirs(platform)
+
+            if not config_dirs:
+                print("  ⚠ No IntelliJ configuration found")
+                return False
+
+            updated_any = False
+            for config_dir in config_dirs:
+                jdk_table_path = config_dir / "options" / "jdk.table.xml"
+                if jdk_table_path.exists():
+                    if self._update_jdk_table(jdk_table_path, project_root, venv_path, platform):
+                        print(f"  ✅ Updated IntelliJ config: {config_dir.name}")
+                        updated_any = True
+
+            if not updated_any:
+                print("  ⚠ No matching interpreter found in IntelliJ configuration")
+
+            return updated_any
+
+        except Exception as e:
+            print(f"  ⚠ Could not update IntelliJ config: {e}")
+            return False
+
+    def _find_intellij_config_dirs(self, platform):
+        """Find IntelliJ configuration directories across platforms."""
+        home = Path.home()
+        config_dirs = []
+
+        if platform == 'linux':
+            # Linux: ~/.config/JetBrains/
+            linux_config = home / ".config" / "JetBrains"
+            if linux_config.exists():
+                config_dirs.extend(linux_config.glob("*PyCharm*"))
+                config_dirs.extend(linux_config.glob("*IntelliJ*"))
+
+        elif platform == 'macos':
+            # macOS: ~/Library/Application Support/JetBrains/
+            macos_config = home / "Library" / "Application Support" / "JetBrains"
+            if macos_config.exists():
+                config_dirs.extend(macos_config.glob("*PyCharm*"))
+                config_dirs.extend(macos_config.glob("*IntelliJ*"))
+
+        elif platform == 'windows':
+            # Windows: %APPDATA%\JetBrains\
+            appdata = Path(os.environ.get('APPDATA', str(home / 'AppData' / 'Roaming')))
+            windows_config = appdata / "JetBrains"
+            if windows_config.exists():
+                config_dirs.extend(windows_config.glob("*PyCharm*"))
+                config_dirs.extend(windows_config.glob("*IntelliJ*"))
+
+        return [d for d in config_dirs if d.is_dir()]
+
+    def _update_jdk_table(self, jdk_table_path, project_root, venv_path, platform):
+        """Update jdk.table.xml with project root path."""
+        try:
+            # Parse XML
+            tree = ET.parse(str(jdk_table_path))
+            root = tree.getroot()
+
+            # Convert paths to IntelliJ format
+            home_str = str(Path.home())
+            if platform == 'windows':
+                # Windows uses forward slashes in IntelliJ paths
+                project_root_relative = project_root.replace(home_str, '').replace('\\', '/')
+                venv_path_search = venv_path.replace('\\', '/')
+            else:
+                project_root_relative = project_root.replace(home_str, '')
+                venv_path_search = venv_path
+
+            intellij_path = f"file://$USER_HOME${project_root_relative}"
+
+            # Find interpreter that matches our virtual environment
+            updated = False
+            for jdk in root.findall(".//jdk"):
+                home_path = jdk.find("homePath")
+                if home_path is not None and venv_path_search in home_path.get("value", ""):
+
+                    # Add to classPath
+                    class_path = jdk.find(".//classPath/root[@type='composite']")
+                    if class_path is not None:
+                        # Check if already exists
+                        exists = any(r.get("url") == intellij_path for r in class_path.findall("root[@type='simple']"))
+
+                        if not exists:
+                            new_root = ET.SubElement(class_path, "root")
+                            new_root.set("url", intellij_path)
+                            new_root.set("type", "simple")
+                            updated = True
+
+            if updated:
+                # Save with proper formatting
+                tree.write(str(jdk_table_path), encoding='utf-8', xml_declaration=True)
+                return True
+
+            return False
+
+        except Exception as e:
+            print(f"    ⚠ Error updating XML: {e}")
+            return False
 
 
 setup(
