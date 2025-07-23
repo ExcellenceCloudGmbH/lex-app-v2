@@ -12,25 +12,40 @@ with open('requirements.txt') as f:
 
 class CustomInstallCommand(install):
     def run(self):
+        print("🚀 CustomInstallCommand.run() called!")
         # First, run the standard installation
         install.run(self)
+        print("✅ Standard installation completed")
 
         # Now handle the custom installation of other_directory
-        self.move_other_directory()
+        print("📁 Attempting to move other_directory...")
+        try:
+            self.move_other_directory()
+        except Exception as e:
+            print(f"⚠ move_other_directory failed: {e}")
 
         # Fix IntelliJ linter by adding parent directory to Python path
+        print("🔧 Attempting IntelliJ linter fix...")
         self.fix_intellij_linter()
+        print("🏁 CustomInstallCommand.run() finished!")
 
     def move_other_directory(self):
         # Define the source and target paths
         source = os.path.join(os.path.dirname(__file__), 'lex', 'generic_app')
         target = os.path.join(os.path.dirname(self.install_lib), 'generic_app')
 
-        # Ensure the package_data entry points to the correct location
-        if os.path.exists(target):
-            shutil.rmtree(target)  # Remove the existing directory if it exists
-        shutil.move(source, target)
-        print(f'Moved other_directory to {target}')
+        print(f"📂 Looking for source: {source}")
+        print(f"📂 Target would be: {target}")
+
+        # Only move if source exists
+        if os.path.exists(source):
+            # Ensure the package_data entry points to the correct location
+            if os.path.exists(target):
+                shutil.rmtree(target)  # Remove the existing directory if it exists
+            shutil.move(source, target)
+            print(f'✅ Moved other_directory to {target}')
+        else:
+            print(f'⚠ Source directory not found: {source} - skipping move')
 
     def fix_intellij_linter(self):
         """Add project root to virtual environment's Python path via .pth file."""
