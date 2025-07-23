@@ -50,21 +50,38 @@ class CustomInstallCommand(install):
 
             print(f"🎯 Target site-packages: {site_packages}")
 
-            # Find project root - use the directory that contains the package being installed
-            current_path = Path.cwd()
+            # Find the actual project root by looking outside the virtual environment
+            # The virtual environment is usually inside the project or the project is the parent
+            venv_path = Path(sys.prefix)
             package_name = next((pkg for pkg in find_packages() if '.' not in pkg), 'project')
 
-            # The project root is where the main package directory exists
-            project_root = current_path
-            test_path = current_path
-            while test_path != test_path.parent:
+            print(f"📦 Package name: {package_name}")
+            print(f"🔍 Virtual env path: {venv_path}")
+
+            # Method 1: Check if venv is inside project (most common case)
+            project_root = None
+            test_path = venv_path.parent
+
+            # Look for the project directory that contains both the venv and the package
+            while test_path != test_path.parent and not project_root:
+                # Check if this directory contains the package
                 if (test_path / package_name).exists() and (test_path / package_name / '__init__.py').exists():
                     project_root = test_path
                     break
                 test_path = test_path.parent
 
-            print(f"📁 Project root: {project_root}")
-            print(f"📦 Package name: {package_name}")
+            # Method 2: If venv name suggests it's inside project (e.g., .venv, venv)
+            if not project_root and venv_path.name in ['.venv', 'venv', 'env']:
+                potential_root = venv_path.parent
+                if (potential_root / package_name).exists() and (
+                        potential_root / package_name / '__init__.py').exists():
+                    project_root = potential_root
+
+            # Method 3: Fallback - use the parent of venv
+            if not project_root:
+                project_root = venv_path.parent
+
+            print(f"📁 Detected project root: {project_root}")
 
             # Ensure site-packages directory exists
             if not site_packages.exists():
