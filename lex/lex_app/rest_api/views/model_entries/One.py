@@ -57,8 +57,10 @@ class OneModelEntry(
             with model_logging_context(instance):
                 if "calculate" in request.data and request.data["calculate"] == "true":
                     # instance = model_container.model_class.objects.filter(pk=self.kwargs["pk"]).first()
+                    instance.untrack()
                     instance.is_calculated = CalculationModel.IN_PROGRESS
                     instance.save(skip_hooks=True)
+                    instance.track()
                     update_calculation_status(instance)
 
                 # TODO: For sharepoint preview, find a new way to create an audit log with the new structure

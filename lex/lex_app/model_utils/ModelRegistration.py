@@ -1,4 +1,3 @@
-
 import asyncio
 import os
 
@@ -8,7 +7,7 @@ from simple_history import register
 
 class ModelRegistration:
     @classmethod
-    def register_models(cls, models):
+    def register_models(cls, models, untracked_models=[]):
         from lex.lex_app.ProcessAdminSettings import processAdminSite, adminSite
         from lex.lex_app.lex_models.Process import Process
         from lex.lex_app.lex_models.html_report import HTMLReport
@@ -19,7 +18,6 @@ class ModelRegistration:
             return f"{self.first_name} {self.last_name}"
 
         User.add_to_class("__str__", get_username)
-
         processAdminSite.register([User])
 
         for model in models:
@@ -31,8 +29,11 @@ class ModelRegistration:
                 processAdminSite.register([model])
             elif not issubclass(model, type) and not model._meta.abstract:
                 processAdminSite.register([model])
-                register(model)
-                processAdminSite.register([model.history.model])
+                if(model.__name__.lower() not in untracked_models):
+                    register(model)
+                    processAdminSite.register([model.history.model])
+                else:
+                    print(model.__name__.lower())
                 adminSite.register([model])
 
                 if issubclass(model, CalculationModel):

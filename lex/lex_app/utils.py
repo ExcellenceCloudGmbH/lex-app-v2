@@ -43,6 +43,7 @@ class GenericAppConfig(AppConfig):
         self.project_path = None
         self.model_structure_builder = None
         self.pending_relationships = None
+        self.untracked_models = ["calculationlog", "auditlog", "auditlogstatus"]
         self.discovered_models = None
 
     def ready(self):
@@ -61,6 +62,7 @@ class GenericAppConfig(AppConfig):
         if not self.model_structure_builder.model_structure and not subdir:
             self.model_structure_builder.build_structure(self.discovered_models)
 
+        self.untracked_models += self.model_structure_builder.untracked_models
         self.register_models()
 
         # TODO: Creation of API KEY should be possible in IC per instance
@@ -132,9 +134,11 @@ class GenericAppConfig(AppConfig):
         from lex_app.streamlit.Streamlit import Streamlit
 
         ModelRegistration.register_models(
-            [o for o in self.discovered_models.values() if not admin.site.is_registered(o)])
+            [o for o in self.discovered_models.values() if not admin.site.is_registered(o)],
+            self.untracked_models
+        )
 
         ModelRegistration.register_model_structure(self.model_structure_builder.model_structure)
         ModelRegistration.register_model_styling(self.model_structure_builder.model_styling)
         ModelRegistration.register_widget_structure(self.model_structure_builder.widget_structure)
-        ModelRegistration.register_models([Streamlit])
+        ModelRegistration.register_models([Streamlit], self.untracked_models)

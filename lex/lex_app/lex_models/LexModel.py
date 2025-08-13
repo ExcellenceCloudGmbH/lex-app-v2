@@ -27,3 +27,12 @@ class LexModel(LifecycleModel):
             self.created_by = f"{context['request_obj'].auth['name']} ({context['request_obj'].auth['sub']})"
         else:
             self.created_by = 'Initial Data Upload'
+
+
+    def track(self):
+        del self.skip_history_when_saving
+
+
+    def untrack(self):
+        self.skip_history_when_saving = True
+
