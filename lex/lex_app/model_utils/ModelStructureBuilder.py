@@ -11,6 +11,7 @@ class ModelStructureBuilder:
         self.model_structure = {}
         self.model_styling = {}
         self.widget_structure = []
+        self.untracked_models = []
 
     def extract_from_yaml(self, path: str):
         if not os.path.exists(path):
@@ -22,6 +23,7 @@ class ModelStructureBuilder:
         info = ModelStructure(path)
         self.model_structure = info.structure
         self.model_styling = info.styling
+        self.untracked_models = info.untracked_models
 
     def extract_and_save_structure(self, full_module_name: str) -> None:
         try:
@@ -49,6 +51,7 @@ class ModelStructureBuilder:
             "model_structure": self.model_structure,
             "widget_structure": self.widget_structure,
             "model_styling": self.model_styling,
+            "untracked_models": self.untracked_models,
         }
 
     def build_structure(self, models) -> Dict:
