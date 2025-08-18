@@ -15,10 +15,9 @@ Including another URLconf
 """
 import os
 
-from django.urls import path, re_path, include
+from django.urls import path, include
 
-from react.views import serve_react
-from . import settings, views
+from . import views
 from .ProcessAdminSettings import processAdminSite, adminSite
 from lex.lex_app.rest_api.views.authentication.UserAPIView import UserAPIView
 
@@ -31,8 +30,9 @@ urlpatterns = [
     path("api/user/", UserAPIView.as_view(), name="api-user"),
     path(url_prefix + "admin/", adminSite.urls),
     path(url_prefix, processAdminSite.urls),
-    path("oidc/", include("mozilla_django_oidc.urls")),
-    re_path(
-        r"^(?P<path>.*)$", serve_react, {"document_root": settings.REACT_APP_BUILD_PATH}
-    ),
+    # path("oidc/", include("mozilla_django_oidc.urls")),
+    path("oidc/", include("oauth2_authcodeflow.urls")),
+    # re_path(
+    #     r"^(?P<path>.*)$", serve_react, {"document_root": settings.REACT_APP_BUILD_PATH}
+    # ),
 ]

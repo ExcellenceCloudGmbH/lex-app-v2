@@ -231,6 +231,7 @@ INSTALLED_APPS = [
     "rest_framework_api_key",
     "django.contrib.postgres",
     "django_db_views",
+    "oauth2_authcodeflow",
 ]
 
 if repo_name != "lex":
@@ -252,7 +253,10 @@ MIDDLEWARE = [
     "django_cprofile_middleware.middleware.ProfilerMiddleware",
     "simple_history.middleware.HistoryRequestMiddleware",
     # 'mozilla_django_oidc.middleware.SessionRefresh',
-    "lex.lex_app.rest_api.views.authentication.RefreshTokenSessionMiddleware.RefreshTokenSessionMiddleware",
+    # "lex.lex_app.rest_api.views.authentication.RefreshTokenSessionMiddleware.RefreshTokenSessionMiddleware",
+    "oauth2_authcodeflow.middleware.LoginRequiredMiddleware",
+    "oauth2_authcodeflow.middleware.RefreshAccessTokenMiddleware",
+    "oauth2_authcodeflow.middleware.RefreshSessionMiddleware",
 ]
 
 DJANGO_CPROFILE_MIDDLEWARE_REQUIRE_STAFF = False
@@ -485,47 +489,57 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=2),
 }
 
-OIDC_OP_JWKS_ENDPOINT = (
-    "https://exc-testing.com/realms/lex/protocol/openid-connect/certs"
-)
+# OIDC_OP_JWKS_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/certs"
+# )
 OIDC_RP_CLIENT_ID = "LEX_LOCAL_ENV"
 OIDC_RP_CLIENT_SECRET = "O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF"
-OIDC_OP_AUTHORIZATION_ENDPOINT = (
-    "https://exc-testing.com/realms/lex/protocol/openid-connect/auth"
+# OIDC_OP_AUTHORIZATION_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/auth"
+# )
+# OIDC_OP_TOKEN_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/token"
+# )
+# OIDC_OP_USER_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/userinfo"
+# )
+# OIDC_RP_SIGN_ALGO = "RS256"
+# LOGIN_REDIRECT_URL = "http://localhost:3000/"
+# LOGOUT_REDIRECT_URL = "http://localhost:3000/"
+# OIDC_VERIFY_SSL = False
+# OIDC_REDIRECT_REQUIRE_HTTPS = False
+# OIDC_STORE_ID_TOKEN = True
+# OIDC_STORE_ACCESS_TOKEN = True
+# # OIDC_REDIRECT_ALLOWED_HOSTS = ["localhost:3000"]
+# OIDC_DRF_AUTH_BACKEND = "mozilla_django_oidc.auth.OIDCAuthenticationBackend"
+# OIDC_OP_LOGOUT_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/logout"
+# )
+# OIDC_OP_LOGOUT_URL_METHOD = (
+#     "lex.lex_app.rest_api.views.authentication.auth.provider_logout"
+# )
+# ALLOW_LOGOUT_GET_METHOD = True
+
+OIDC_OP_DISCOVERY_DOCUMENT_URL = (
+    "http://exc-testing.com:8080/realms/lex/.well-known/openid-configuration"
 )
-OIDC_OP_TOKEN_ENDPOINT = (
-    "https://exc-testing.com/realms/lex/protocol/openid-connect/token"
-)
-OIDC_OP_USER_ENDPOINT = (
-    "https://exc-testing.com/realms/lex/protocol/openid-connect/userinfo"
-)
-OIDC_RP_SIGN_ALGO = "RS256"
-LOGIN_REDIRECT_URL = "http://localhost:3000/"
-LOGOUT_REDIRECT_URL = "http://localhost:3000/"
-OIDC_VERIFY_SSL = False
-OIDC_REDIRECT_REQUIRE_HTTPS = False
-OIDC_STORE_ID_TOKEN = True
-OIDC_STORE_ACCESS_TOKEN = True
-OIDC_REDIRECT_ALLOWED_HOSTS = ["localhost:3000"]
-OIDC_DRF_AUTH_BACKEND = "mozilla_django_oidc.auth.OIDCAuthenticationBackend"
-OIDC_OP_LOGOUT_ENDPOINT = (
-    "https://exc-testing.com/realms/lex/protocol/openid-connect/logout"
-)
-OIDC_OP_LOGOUT_URL_METHOD = (
-    "lex.lex_app.rest_api.views.authentication.auth.provider_logout"
-)
-ALLOW_LOGOUT_GET_METHOD = True
 # OIDC_CALLBACK_CLASS = "lex.lex_app.rest_api.views.authentication.CustomOIDCAuthenticationCallbackView.CustomOIDCAuthenticationCallbackView"
 AUTHENTICATION_BACKENDS = (
     # 'mozilla_django_oidc.auth.OIDCAuthenticationBackend',
     # "lex.lex_app.rest_api.views.authentication.RefreshingOIDCAuthenticationBackend.RefreshingOIDCAuthenticationBackend"
-    "lex.lex_app.rest_api.views.authentication.KeycloakUMAAuthBackend.KeycloakUMAAuthBackend",
+    # "lex.lex_app.rest_api.views.authentication.KeycloakUMAAuthBackend.KeycloakUMAAuthBackend",
+    "oauth2_authcodeflow.auth.AuthenticationBackend",
 )
 # OIDC_RENEW_ID_TOKEN_EXPIRY_SECONDS = 15
-OIDC_RP_SCOPES = "openid email offline_access"
+OIDC_RP_SCOPES = ["openid", "email", "profile"]
+# OIDC_REDIRECT_OK_FIELD_NAME = "next"
+OIDC_MIDDLEWARE_NO_AUTH_URL_PATTERNS = ["/health", "/favicon.ico"]
+OIDC_RP_USE_PKCE = False
+OIDC_MIDDLEWARE_LOGIN_REQUIRED_REDIRECT = True
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    "http://localhost:8000",
     # add any other hosts your front-end uses
 ]
 
@@ -550,7 +564,7 @@ CORS_ALLOWED_ORIGINS = [
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "mozilla_django_oidc.contrib.drf.OIDCAuthentication",
+        # "mozilla_django_oidc.contrib.drf.OIDCAuthentication",
         "rest_framework.authentication.SessionAuthentication",
         # other authentication classes, if needed
     ],
@@ -579,6 +593,7 @@ CORS_ORIGIN_WHITELIST = [
     "https://" + os.getenv("DOMAIN_HOSTED", "localhost:3000"),
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:8000",
 ]
 
 LANGUAGE_CODE = "en-us"

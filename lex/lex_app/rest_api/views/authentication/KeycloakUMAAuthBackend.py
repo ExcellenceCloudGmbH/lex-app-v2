@@ -1,6 +1,5 @@
 # myapp/auth_backend.py
 from mozilla_django_oidc.auth import OIDCAuthenticationBackend
-from lex.lex_app.rest_api.views.authentication.helpers import sync_user_permissions
 
 
 class KeycloakUMAAuthBackend(OIDCAuthenticationBackend):
@@ -25,4 +24,4 @@ class KeycloakUMAAuthBackend(OIDCAuthenticationBackend):
         if not access_token:
             return
 
-        sync_user_permissions(user, access_token)
+        # sync_user_permissions(user, access_token)
