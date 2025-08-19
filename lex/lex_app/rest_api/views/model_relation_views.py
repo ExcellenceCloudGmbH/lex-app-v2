@@ -6,6 +6,7 @@ from rest_framework.views import APIView
 from rest_framework_api_key.permissions import HasAPIKey
 
 from lex.lex_app.rest_api.model_collection.model_collection import ModelCollection
+from lex.lex_app.model_utils.ModelStructure import ModelStructure
 
 
 class ModelStructureObtainView(APIView):
@@ -54,6 +55,8 @@ class ModelStructureObtainView(APIView):
                 except Exception:
                     container = None
 
+                node['tracked'] = node_id.lower() not in ModelStructure.UNTRACKED_MODELS
+                print(ModelStructure.UNTRACKED_MODELS)
                 if container and hasattr(container, "serializers_map"):
                     node["available_serializers"] = list(
                         container.serializers_map.keys()

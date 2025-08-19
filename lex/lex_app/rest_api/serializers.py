@@ -3,7 +3,6 @@ from rest_framework import serializers, viewsets
 # -- Base template that provides `short_description` --
 class RestApiModelSerializerTemplate(serializers.ModelSerializer):
     short_description = serializers.SerializerMethodField()
-
     def get_short_description(self, obj):
         return str(obj)
 
@@ -50,7 +49,7 @@ def model2serializer(model, fields=None, name_suffix=""):
         (RestApiModelSerializerTemplate,),
         {
             # add our alias‐and‐description fields
-            ID_FIELD_NAME: pk_alias,
+            ID_FIELD_NAME: serializers.ReadOnlyField(default=model._meta.pk.name),
             "Meta": type(
                 "Meta",
                 (RestApiModelSerializerTemplate.Meta,),

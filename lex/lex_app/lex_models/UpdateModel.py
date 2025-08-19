@@ -32,12 +32,21 @@ class UpdateModel(LexModel):
         else:
             self.is_creation = False
         self.is_calculated = CalculationModel.IN_PROGRESS
+        self.untrack()
         self.save(skip_hooks=True)
+        self.track()
         update_calculation_status(self)
+
+
+
+    # Save
+
+
 
     @hook(AFTER_UPDATE, on_commit=True)
     @hook(AFTER_CREATE, on_commit=True)
     def calculate_hook(self):
+        self.untrack()
         from lex.lex_app.rest_api.signals import update_calculation_status
 
         # update_calculation_status(self)
@@ -55,3 +64,5 @@ class UpdateModel(LexModel):
         finally:
             self.save(skip_hooks=True)
             update_calculation_status(self)
+
+
