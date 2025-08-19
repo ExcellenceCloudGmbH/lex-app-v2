@@ -96,22 +96,3 @@ class CalculationModel(LexModel):
             self.save(skip_hooks=True)
             update_calculation_status(self)
 
-    @hook(AFTER_UPDATE, condition=WhenFieldValueIs("is_calculated", SUCCESS))
-    @hook(AFTER_UPDATE, condition=WhenFieldValueIs("is_calculated", ERROR))
-    @hook(AFTER_UPDATE, condition=WhenFieldValueIs("is_calculated", ABORTED))
-    def calculation_completed_hook(self):
-        """
-        Hook triggered when calculation reaches a completed status (SUCCESS, ERROR, or ABORTED).
-        Performs cache cleanup for the completed calculation.
-        """
-        try:
-            calc_id = context_id.get()["calculation_id"]
-            cleanup_result = CacheManager.cleanup_calculation(calc_id)
-            
-            if cleanup_result.success:
-                logger.info(f"Cache cleanup successful for completed calculation {calc_id} with status {self.is_calculated}")
-            else:
-                logger.warning(f"Cache cleanup had errors for completed calculation {calc_id} with status {self.is_calculated}: {cleanup_result.errors}")
-                
-        except Exception as e:
-            logger.error(f"Cache cleanup failed for completed calculation with status {self.is_calculated}: {str(e)}")

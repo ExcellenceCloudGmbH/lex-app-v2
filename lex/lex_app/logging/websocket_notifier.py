@@ -9,7 +9,7 @@ import logging
 from typing import Optional
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
-from lex.lex_app.logging.data_models import WebSocketError
+# from lex.lex_app.logging.data_models import WebSocketError
 
 
 logger = logging.getLogger(__name__)

@@ -54,17 +54,18 @@ def _perform_cache_cleanup_for_status_update(instance, status):
         instance: The CalculationModel instance
         status: The status that triggered the cleanup (SUCCESS, ERROR, or ABORTED)
     """
-    try:
-        calc_id = context_id.get()["calculation_id"]
-        cleanup_result = CacheManager.cleanup_calculation(calc_id)
-        
-        if cleanup_result.success:
-            logger.info(f"Cache cleanup successful for calculation {calc_id} status update to {status}")
-        else:
-            logger.warning(f"Cache cleanup had errors for calculation {calc_id} status update to {status}: {cleanup_result.errors}")
-            
-    except Exception as e:
-        logger.error(f"Cache cleanup failed for calculation status update to {status}: {str(e)}")
+    pass
+    # try:
+    #     calc_id = context_id.get()["calculation_id"]
+    #     cleanup_result = CacheManager.cleanup_calculation(calc_id)
+    #
+    #     if cleanup_result.success:
+    #         logger.info(f"Cache cleanup successful for calculation {calc_id} status update to {status}")
+    #     else:
+    #         logger.warning(f"Cache cleanup had errors for calculation {calc_id} status update to {status}: {cleanup_result.errors}")
+    #
+    # except Exception as e:
+    #     logger.error(f"Cache cleanup failed for calculation status update to {status}: {str(e)}")
 
 
 def do_post_save(sender, **kwargs):
