@@ -11,6 +11,9 @@ from django.apps import apps
 from django.core.cache import cache
 from django.core.files import File
 from django.core.files.storage import default_storage
+from django.db import models
+
+from lex.lex_app.logging.config import is_audit_logging_enabled
 
 from lex.lex_app import settings
 
@@ -32,59 +35,106 @@ class ProcessAdminTestCase(TestCase):
 
     test_path = None
 
-    def setUpCloudStorage(self, generic_app_models) -> None:
+    def setUpCloudStorage(self, generic_app_models, audit_logger=None) -> None:
         from datetime import datetime
         self.t0 = datetime.now()
         self.tagged_objects = {}
         test_data = self.get_test_data()
+        
+        # Check if audit logging is enabled
+        audit_enabled = (audit_logger is not None and is_audit_logging_enabled())
+        
         for object in test_data:
             klass = generic_app_models[object['class']]
             action = object['action']
             tag = object['tag'] if 'tag' in object else 'instance'
-            if action == 'create':
-                object['parameters'] = self.replace_tagged_parameters(object['parameters'])
-                self.tagged_objects[tag] = klass(**object['parameters'])
-                for parameter in object['parameters'].keys():
-                    if (isinstance(self.tagged_objects[tag]._meta.get_field(parameter), (FileField))):
-                        upload_to = self.tagged_objects[tag]._meta.get_field(parameter).upload_to
-                        if upload_to and not upload_to.endswith('/'):
-                            upload_to += "/"
-                        path = f"{upload_to}{os.path.basename(self.tagged_objects[tag].__dict__[parameter])}"
-                        file_name = os.path.basename(self.tagged_objects[tag].__dict__[parameter])
-                        f = open(f"{os.getcwd()}/{self.tagged_objects[tag].__dict__[parameter]}", "rb")
-                        file_content = f.read()
-                        new_file_name = default_storage.save(path, content=File(io.BytesIO(file_content),
-                                                                                name=f"{file_name}"))
-                        self.tagged_objects[tag].__dict__[parameter] = new_file_name
-
-                cache.set(threading.get_ident(), str(object['class']) + "_" + action)
-                self.tagged_objects[tag].save()
-            elif action == 'update':
-                object['filter_parameters'] = self.replace_tagged_parameters(object['filter_parameters'])
-                self.tagged_objects[tag] = klass.objects.filter(**object['filter_parameters']).first()
-                if self.tagged_objects[tag] is not None:
-                    for key in object['parameters']:
-                        if isinstance(self.tagged_objects[tag]._meta.get_field(key), (FileField)):
-                            upload_to = self.tagged_objects[tag]._meta.get_field(key).upload_to
+            audit_log = None
+            
+            try:
+                if action == 'create':
+                    object['parameters'] = self.replace_tagged_parameters(object['parameters'])
+                    
+                    # Log audit entry before creation if audit logging is enabled
+                    if audit_enabled:
+                        audit_log = audit_logger.log_object_creation(klass, object['parameters'], tag)
+                    
+                    self.tagged_objects[tag] = klass(**object['parameters'])
+                    for parameter in object['parameters'].keys():
+                        if (isinstance(self.tagged_objects[tag]._meta.get_field(parameter), (models.FileField))):
+                            upload_to = self.tagged_objects[tag]._meta.get_field(parameter).upload_to
                             if upload_to and not upload_to.endswith('/'):
                                 upload_to += "/"
-                            path = f"{upload_to}{os.path.basename(object['parameters'][key])}"
-                            file_name = os.path.basename(object['parameters'][key])
-                            f = open(f"{os.getcwd()}/{object['parameters'][key]}", "rb")
+                            path = f"{upload_to}{os.path.basename(self.tagged_objects[tag].__dict__[parameter])}"
+                            file_name = os.path.basename(self.tagged_objects[tag].__dict__[parameter])
+                            f = open(f"{os.getcwd()}/{self.tagged_objects[tag].__dict__[parameter]}", "rb")
                             file_content = f.read()
                             new_file_name = default_storage.save(path, content=File(io.BytesIO(file_content),
                                                                                     name=f"{file_name}"))
-                            setattr(self.tagged_objects[tag], key, new_file_name)
-                        else:
-                            setattr(self.tagged_objects[tag], key, object['parameters'][key])
+                            self.tagged_objects[tag].__dict__[parameter] = new_file_name
 
-                    cache.set(threading.get_ident(),
-                              str(object['class']) + "_" + action + "_" + str(self.tagged_objects[tag].pk))
+                    cache.set(threading.get_ident(), str(object['class']) + "_" + action)
                     self.tagged_objects[tag].save()
-            elif action == 'delete':
-                klass.objects.filter(**object['filter_parameters']).delete()
+                    
+                    # Mark audit log as successful if audit logging is enabled
+                    if audit_enabled and audit_log:
+                        audit_logger.mark_operation_success(audit_log)
+                        
+                elif action == 'update':
+                    object['filter_parameters'] = self.replace_tagged_parameters(object['filter_parameters'])
+                    self.tagged_objects[tag] = klass.objects.filter(**object['filter_parameters']).first()
+                    if self.tagged_objects[tag] is not None:
+                        # Log audit entry before update if audit logging is enabled
+                        if audit_enabled:
+                            audit_log = audit_logger.log_object_update(klass, self.tagged_objects[tag], object['parameters'], tag)
+                        
+                        for key in object['parameters']:
+                            if isinstance(self.tagged_objects[tag]._meta.get_field(key), (models.FileField)):
+                                upload_to = self.tagged_objects[tag]._meta.get_field(key).upload_to
+                                if upload_to and not upload_to.endswith('/'):
+                                    upload_to += "/"
+                                path = f"{upload_to}{os.path.basename(object['parameters'][key])}"
+                                file_name = os.path.basename(object['parameters'][key])
+                                f = open(f"{os.getcwd()}/{object['parameters'][key]}", "rb")
+                                file_content = f.read()
+                                new_file_name = default_storage.save(path, content=File(io.BytesIO(file_content),
+                                                                                        name=f"{file_name}"))
+                                setattr(self.tagged_objects[tag], key, new_file_name)
+                            else:
+                                setattr(self.tagged_objects[tag], key, object['parameters'][key])
 
-    def setUp(self) -> None:
+                        cache.set(threading.get_ident(),
+                                  str(object['class']) + "_" + action + "_" + str(self.tagged_objects[tag].pk))
+                        self.tagged_objects[tag].save()
+                        
+                        # Mark audit log as successful if audit logging is enabled
+                        if audit_enabled and audit_log:
+                            audit_logger.mark_operation_success(audit_log)
+                            
+                elif action == 'delete':
+                    # Log audit entry before deletion if audit logging is enabled
+                    if audit_enabled:
+                        audit_log = audit_logger.log_object_deletion(klass, object['filter_parameters'], tag)
+                    
+                    klass.objects.filter(**object['filter_parameters']).delete()
+                    
+                    # Mark audit log as successful if audit logging is enabled
+                    if audit_enabled and audit_log:
+                        audit_logger.mark_operation_success(audit_log)
+                        
+            except Exception as e:
+                # Mark audit log as failed if audit logging is enabled and an error occurred
+                if audit_enabled and audit_log:
+                    import traceback
+                    error_msg = f"Error during {action} operation on {klass.__name__} (tag: {tag}) in setUpCloudStorage: {str(e)}\n{traceback.format_exc()}"
+                    try:
+                        audit_logger.mark_operation_failure(audit_log, error_msg)
+                    except Exception as audit_error:
+                        # If audit logging itself fails, log it but don't break the main process
+                        print(f"Warning: Failed to mark audit log as failed during setUpCloudStorage: {audit_error}")
+                # Re-raise the exception to maintain existing error handling behavior
+                raise
+
+    def setUp(self, audit_logger=None) -> None:
         from datetime import datetime
 
         generic_app_models = {f"{model.__name__}": model for model in
@@ -93,27 +143,74 @@ class ProcessAdminTestCase(TestCase):
         self.t0 = datetime.now()
         self.tagged_objects = {}
         test_data = self.get_test_data()
+        
+        # Check if audit logging is enabled
+        audit_enabled = (audit_logger is not None and is_audit_logging_enabled())
+        
         for object in test_data:
             klass = generic_app_models[object['class']]
             action = object['action']
             tag = object['tag'] if 'tag' in object else 'instance'
-            if action == 'create':
-                object['parameters'] = self.replace_tagged_parameters(object['parameters'])
-                self.tagged_objects[tag] = klass(**object['parameters'])
-                cache.set(threading.get_ident(), str(object['class']) + "_" + action)
-                self.tagged_objects[tag].save()
-            elif action == 'update':
-                object['filter_parameters'] = self.replace_tagged_parameters(object['filter_parameters'])
-                self.tagged_objects[tag] = klass.objects.filter(**object['filter_parameters']).first()
-                if self.tagged_objects[tag] is not None:
-                    for key in object['parameters']:
-                        setattr(self.tagged_objects[tag], key, object['parameters'][key])
-
-                    cache.set(threading.get_ident(),
-                              str(object['class']) + "_" + action + "_" + str(self.tagged_objects[tag].pk))
+            audit_log = None
+            
+            try:
+                if action == 'create':
+                    object['parameters'] = self.replace_tagged_parameters(object['parameters'])
+                    
+                    # Log audit entry before creation if audit logging is enabled
+                    if audit_enabled:
+                        audit_log = audit_logger.log_object_creation(klass, object['parameters'], tag)
+                    
+                    self.tagged_objects[tag] = klass(**object['parameters'])
+                    cache.set(threading.get_ident(), str(object['class']) + "_" + action)
                     self.tagged_objects[tag].save()
-            elif action == 'delete':
-                klass.objects.filter(**object['filter_parameters']).delete()
+                    
+                    # Mark audit log as successful if audit logging is enabled
+                    if audit_enabled and audit_log:
+                        audit_logger.mark_operation_success(audit_log)
+                        
+                elif action == 'update':
+                    object['filter_parameters'] = self.replace_tagged_parameters(object['filter_parameters'])
+                    self.tagged_objects[tag] = klass.objects.filter(**object['filter_parameters']).first()
+                    if self.tagged_objects[tag] is not None:
+                        # Log audit entry before update if audit logging is enabled
+                        if audit_enabled:
+                            audit_log = audit_logger.log_object_update(klass, self.tagged_objects[tag], object['parameters'], tag)
+                        
+                        for key in object['parameters']:
+                            setattr(self.tagged_objects[tag], key, object['parameters'][key])
+
+                        cache.set(threading.get_ident(),
+                                  str(object['class']) + "_" + action + "_" + str(self.tagged_objects[tag].pk))
+                        self.tagged_objects[tag].save()
+                        
+                        # Mark audit log as successful if audit logging is enabled
+                        if audit_enabled and audit_log:
+                            audit_logger.mark_operation_success(audit_log)
+                            
+                elif action == 'delete':
+                    # Log audit entry before deletion if audit logging is enabled
+                    if audit_enabled:
+                        audit_log = audit_logger.log_object_deletion(klass, object['filter_parameters'], tag)
+                    
+                    klass.objects.filter(**object['filter_parameters']).delete()
+                    
+                    # Mark audit log as successful if audit logging is enabled
+                    if audit_enabled and audit_log:
+                        audit_logger.mark_operation_success(audit_log)
+                        
+            except Exception as e:
+                # Mark audit log as failed if audit logging is enabled and an error occurred
+                if audit_enabled and audit_log:
+                    import traceback
+                    error_msg = f"Error during {action} operation on {klass.__name__} (tag: {tag}) in setUp: {str(e)}\n{traceback.format_exc()}"
+                    try:
+                        audit_logger.mark_operation_failure(audit_log, error_msg)
+                    except Exception as audit_error:
+                        # If audit logging itself fails, log it but don't break the main process
+                        print(f"Warning: Failed to mark audit log as failed during setUp: {audit_error}")
+                # Re-raise the exception to maintain existing error handling behavior
+                raise
 
     def tearDown(self) -> None:
         pass
