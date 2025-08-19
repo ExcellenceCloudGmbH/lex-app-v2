@@ -10,6 +10,7 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from lex.lex_app.logging.context_resolver import ContextResolver
 from lex.lex_app.logging.cache_manager import CacheManager
+from lex.lex_app.logging.websocket_notifier import WebSocketNotifier
 from lex.lex_app.logging.data_models import (
     CalculationLogError,
     ContextResolutionError,
@@ -103,7 +104,20 @@ class CalculationLog(models.Model):
             log_entry.calculation_log = (log_entry.calculation_log or "") + f"\n{message}"
             log_entry.save()
             
-            # 5) Store in cache using CacheManager
+            # 5) Send WebSocket notifications
+            if context_info.current_record:
+                WebSocketNotifier.send_calculation_update(
+                    context_info.current_record,
+                    context_info.calculation_id
+                )
+            
+            if context_info.parent_record:
+                WebSocketNotifier.send_calculation_update(
+                    context_info.parent_record,
+                    context_info.calculation_id
+                )
+            
+            # 6) Store in cache using CacheManager
             if context_info.current_record:
                 cache_key = CacheManager.build_cache_key(
                     context_info.current_record,
@@ -111,7 +125,7 @@ class CalculationLog(models.Model):
                 )
                 CacheManager.store_message(cache_key, message)
             
-            # 6) Log to standard logger (which handles WebSocket notifications automatically)
+            # 7) Log to standard logger
             logger.debug(
                 message,
                 extra={
