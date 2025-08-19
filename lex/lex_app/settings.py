@@ -599,7 +599,7 @@ LOGGING = {
     },
     "loggers": {
         "lex.calclog": {
-            "handlers": ["ws"],
+            "handlers": ["ws", "console"],
             "level": "DEBUG",
             "propagate": False,
         },

@@ -1,4 +1,5 @@
 from abc import abstractmethod
+import logging
 
 from django.db import models
 from django.db import transaction
@@ -12,6 +13,9 @@ from django_lifecycle.conditions import WhenFieldValueIs
 from lex.lex_app.lex_models.LexModel import LexModel
 from django.core.cache import caches
 from lex.lex_app.rest_api.context import context_id
+from lex.lex_app.logging.cache_manager import CacheManager
+
+logger = logging.getLogger(__name__)
 
 
 class CalculationModel(LexModel):
@@ -70,9 +74,44 @@ class CalculationModel(LexModel):
             self.is_calculated = self.ERROR
             raise e
         finally:
-            redis_cache = caches["redis"]
-            calc_id = context_id.get()["calculation_id"]
-            cache_key = f"calculation_log_{calc_id}"
-            redis_cache.delete(cache_key)
+            # Use the new CacheManager for cleanup instead of direct Redis operations
+            try:
+                calc_id = context_id.get()["calculation_id"]
+                cleanup_result = CacheManager.cleanup_calculation(calc_id)
+                if cleanup_result.success:
+                    logger.info(f"Cache cleanup successful after calculation hook for calculation {calc_id}")
+                else:
+                    logger.warning(f"Cache cleanup had errors after calculation hook for calculation {calc_id}: {cleanup_result.errors}")
+            except Exception as cleanup_error:
+                logger.error(f"Cache cleanup failed after calculation hook: {str(cleanup_error)}")
+                # Fallback to old method if new method fails
+                try:
+                    redis_cache = caches["redis"]
+                    calc_id = context_id.get()["calculation_id"]
+                    cache_key = f"calculation_log_{calc_id}"
+                    redis_cache.delete(cache_key)
+                except Exception as fallback_error:
+                    logger.error(f"Fallback cache cleanup also failed: {str(fallback_error)}")
+            
             self.save(skip_hooks=True)
             update_calculation_status(self)
+
+    @hook(AFTER_UPDATE, condition=WhenFieldValueIs("is_calculated", SUCCESS))
+    @hook(AFTER_UPDATE, condition=WhenFieldValueIs("is_calculated", ERROR))
+    @hook(AFTER_UPDATE, condition=WhenFieldValueIs("is_calculated", ABORTED))
+    def calculation_completed_hook(self):
+        """
+        Hook triggered when calculation reaches a completed status (SUCCESS, ERROR, or ABORTED).
+        Performs cache cleanup for the completed calculation.
+        """
+        try:
+            calc_id = context_id.get()["calculation_id"]
+            cleanup_result = CacheManager.cleanup_calculation(calc_id)
+            
+            if cleanup_result.success:
+                logger.info(f"Cache cleanup successful for completed calculation {calc_id} with status {self.is_calculated}")
+            else:
+                logger.warning(f"Cache cleanup had errors for completed calculation {calc_id} with status {self.is_calculated}: {cleanup_result.errors}")
+                
+        except Exception as e:
+            logger.error(f"Cache cleanup failed for completed calculation with status {self.is_calculated}: {str(e)}")

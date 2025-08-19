@@ -1,3 +1,4 @@
+import logging
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from lex.lex_app.lex_models.UpdateModel import UpdateModel
@@ -5,6 +6,10 @@ from lex.lex_app.lex_models.UpdateModel import UpdateModel
 from lex.lex_app.rest_api.calculated_model_updates.update_handler import (
     CalculatedModelUpdateHandler,
 )
+from lex.lex_app.logging.cache_manager import CacheManager
+from lex.lex_app.rest_api.context import context_id
+
+logger = logging.getLogger(__name__)
 
 
 def update_calculation_status(instance):
@@ -19,8 +24,15 @@ def update_calculation_status(instance):
             message_type = "calculation_in_progress"
         elif instance.is_calculated == CalculationModel.SUCCESS:
             message_type = "calculation_success"
+            # Perform cache cleanup for successful calculations
+            _perform_cache_cleanup_for_status_update(instance, "SUCCESS")
         elif instance.is_calculated == CalculationModel.ERROR:
             message_type = "calculation_error"
+            # Perform cache cleanup for failed calculations
+            _perform_cache_cleanup_for_status_update(instance, "ERROR")
+        elif instance.is_calculated == CalculationModel.ABORTED:
+            # Perform cache cleanup for aborted calculations
+            _perform_cache_cleanup_for_status_update(instance, "ABORTED")
 
         message = {
             "type": message_type,  # This is the correct naming convention
@@ -32,6 +44,27 @@ def update_calculation_status(instance):
         # notification = Notifications(message="Calculation is finished", timestamp=datetime.now())
         # notification.save()
         async_to_sync(channel_layer.group_send)(f"update_calculation_status", message)
+
+
+def _perform_cache_cleanup_for_status_update(instance, status):
+    """
+    Perform cache cleanup when calculation status is updated to a completed state.
+    
+    Args:
+        instance: The CalculationModel instance
+        status: The status that triggered the cleanup (SUCCESS, ERROR, or ABORTED)
+    """
+    try:
+        calc_id = context_id.get()["calculation_id"]
+        cleanup_result = CacheManager.cleanup_calculation(calc_id)
+        
+        if cleanup_result.success:
+            logger.info(f"Cache cleanup successful for calculation {calc_id} status update to {status}")
+        else:
+            logger.warning(f"Cache cleanup had errors for calculation {calc_id} status update to {status}: {cleanup_result.errors}")
+            
+    except Exception as e:
+        logger.error(f"Cache cleanup failed for calculation status update to {status}: {str(e)}")
 
 
 def do_post_save(sender, **kwargs):
