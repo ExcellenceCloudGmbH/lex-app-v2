@@ -1,4 +1,5 @@
 import traceback
+import logging
 
 from django.db import transaction
 from lex.lex_app.logging.model_context import model_logging_context
@@ -19,6 +20,9 @@ from lex.lex_app.rest_api.views.model_entries.mixins.DestroyOneWithPayloadMixin 
 from lex.lex_app.rest_api.views.model_entries.mixins.ModelEntryProviderMixin import (
     ModelEntryProviderMixin,
 )
+from lex.lex_app.logging.cache_manager import CacheManager
+
+logger = logging.getLogger(__name__)
 
 
 class OneModelEntry(
@@ -38,6 +42,7 @@ class OneModelEntry(
             try:
                 with transaction.atomic():
                     response = CreateModelMixin.create(self, request, *args, **kwargs)
+                
             except Exception as e:
                 raise APIException(
                     {"error": f"{e} ", "traceback": traceback.format_exc()}
@@ -69,8 +74,8 @@ class OneModelEntry(
                 try:
                     response = UpdateModelMixin.update(self, request, *args, **kwargs)
 
-                except Exception as e:
 
+                except Exception as e:
                     raise APIException(
                         {"error": f"{e} ", "traceback": traceback.format_exc()}
                     )

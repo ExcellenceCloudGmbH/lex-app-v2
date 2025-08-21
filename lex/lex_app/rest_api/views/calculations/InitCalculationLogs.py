@@ -9,6 +9,9 @@ from lex.lex_app.logging.CalculationLog import CalculationLog
 from lex_app.LexLogger.LexLogger import LexLogLevel, LexLogger
 from django.core.cache import caches
 
+from lex_app.logging.cache_manager import CacheManager
+
+
 class InitCalculationLogs(APIView):
     http_method_names = ['get']
     permission_classes = [HasAPIKey | IsAuthenticated]
@@ -18,9 +21,9 @@ class InitCalculationLogs(APIView):
 
             calculation_id = request.query_params['calculation_id']
             calculation_record = request.query_params['calculation_record']
-            redis_cache = caches['redis']
-            cache_key = f"{calculation_record}_{calculation_id}"
-            cache_value = redis_cache.get(cache_key)
+            cache_key = CacheManager.build_cache_key(calculation_record, calculation_id)
+
+            cache_value = CacheManager.get_message(cache_key)
 
             return JsonResponse({"logs": cache_value})
         except Exception as e:

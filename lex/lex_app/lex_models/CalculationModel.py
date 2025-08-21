@@ -1,4 +1,5 @@
 from abc import abstractmethod
+import logging
 
 from django.db import models
 from django.db import transaction
@@ -11,7 +12,12 @@ from django_lifecycle import (
 from django_lifecycle.conditions import WhenFieldValueIs
 from lex.lex_app.lex_models.LexModel import LexModel
 from django.core.cache import caches
-from lex.lex_app.rest_api.context import context_id
+from lex.lex_app.rest_api.context import operation_context
+from lex.lex_app.logging.cache_manager import CacheManager
+from lex.lex_app.logging.model_context import model_logging_context
+from lex_app.logging.context_resolver import ContextResolver
+
+logger = logging.getLogger(__name__)
 
 
 class CalculationModel(LexModel):
@@ -35,6 +41,8 @@ class CalculationModel(LexModel):
 
     class Meta:
         abstract = True
+
+
 
     @abstractmethod
     def update(self):
@@ -70,9 +78,21 @@ class CalculationModel(LexModel):
             self.is_calculated = self.ERROR
             raise e
         finally:
-            redis_cache = caches["redis"]
-            calc_id = context_id.get()["calculation_id"]
-            cache_key = f"calculation_log_{calc_id}"
-            redis_cache.delete(cache_key)
+            # Use the new CacheManager for cleanup instead of direct Redis operations
+            try:
+                context = ContextResolver.resolve()
+                calc_id = context.calculation_id
+                key_to_clean = CacheManager.build_cache_key(context.calculation_id, context.current_record)
+                cleanup_result = CacheManager.cleanup_calculation(context.calculation_id, specific_keys=[key_to_clean])
+                
+                if cleanup_result.success:
+                    logger.info(f"Cache cleanup successful after calculation hook for calculation {calc_id}")
+                else:
+                    logger.warning(f"Cache cleanup had errors after calculation hook for calculation {calc_id}: {cleanup_result.errors}")
+            except Exception as cleanup_error:
+                logger.error(f"Cache cleanup failed after calculation hook: {str(cleanup_error)}")
+                # Fallback to old method if new method fails
+
             self.save(skip_hooks=True)
             update_calculation_status(self)
+

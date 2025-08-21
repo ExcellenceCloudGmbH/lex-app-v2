@@ -1,8 +1,7 @@
 from django.db import models
 from django_lifecycle import LifecycleModel, hook, AFTER_UPDATE, AFTER_CREATE
 
-from lex.lex_app.rest_api.context import context_id
-
+from lex.lex_app.rest_api.context import operation_context
 
 class LexModel(LifecycleModel):
     
@@ -14,7 +13,7 @@ class LexModel(LifecycleModel):
 
     @hook(AFTER_UPDATE)
     def update_edited_by(self):
-        context = context_id.get()
+        context = operation_context.get()
         if context and hasattr(context['request_obj'], 'auth'):
             self.edited_by = f"{context['request_obj'].auth['name']} ({context['request_obj'].auth['sub']})"
         else:
@@ -22,7 +21,7 @@ class LexModel(LifecycleModel):
 
     @hook(AFTER_CREATE)
     def update_created_by(self):
-        context = context_id.get()
+        context = operation_context.get()
         if context and hasattr(context['request_obj'], 'auth'):
             self.created_by = f"{context['request_obj'].auth['name']} ({context['request_obj'].auth['sub']})"
         else:
