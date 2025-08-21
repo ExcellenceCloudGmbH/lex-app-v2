@@ -7,7 +7,7 @@ from lex.lex_app.rest_api.calculated_model_updates.update_handler import (
     CalculatedModelUpdateHandler,
 )
 from lex.lex_app.logging.cache_manager import CacheManager
-from lex.lex_app.rest_api.context import context_id
+from lex.lex_app.rest_api.context import operation_context
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ def _perform_cache_cleanup_for_status_update(instance, status):
     """
     pass
     # try:
-    #     calc_id = context_id.get()["calculation_id"]
+    #     calc_id = operation_context.get()["calculation_id"]
     #     cleanup_result = CacheManager.cleanup_calculation(calc_id)
     #
     #     if cleanup_result.success:

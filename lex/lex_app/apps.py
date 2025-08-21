@@ -29,7 +29,7 @@ def _create_audit_logger():
         
         from lex.lex_app.logging.InitialDataAuditLogger import InitialDataAuditLogger
         logger = InitialDataAuditLogger()
-        print(f"Successfully initialized audit logger with calculation ID: {logger.calculation_id}")
+        print(f"Successfully initialized audit logger")
         return logger
     except ImportError as e:
         print(f"Warning: Failed to import audit logger module: {e}")
@@ -61,8 +61,7 @@ def _create_audit_logger_for_task(audit_logging_enabled=None, calculation_id=Non
             return None
         elif audit_logging_enabled is True or is_audit_logging_enabled():
             from lex.lex_app.logging.InitialDataAuditLogger import InitialDataAuditLogger
-            logger = InitialDataAuditLogger(calculation_id=calculation_id)
-            print(f"Successfully initialized audit logger for task with calculation ID: {logger.calculation_id}")
+            logger = InitialDataAuditLogger()
             return logger
         else:
             print("Audit logging is disabled for task context")
@@ -111,7 +110,7 @@ def _is_running_in_celery():
 
 
 @shared_task(name="initial_data_upload", max_retries=0)
-def load_data(test, generic_app_models, audit_logging_enabled=None, calculation_id=None):
+def load_data(test, generic_app_models, audit_logging_enabled=None):
     """
     Load data asynchronously if conditions are met.
     
@@ -125,14 +124,14 @@ def load_data(test, generic_app_models, audit_logging_enabled=None, calculation_
 
     if should_load_data(_authentication_settings):
         # Create audit logger if enabled, with support for Celery context
-        audit_logger = _create_audit_logger_for_task(audit_logging_enabled, calculation_id)
+        audit_logger = _create_audit_logger_for_task(audit_logging_enabled)
         
         try:
             test.test_path = _authentication_settings.initial_data_load
             print("All models are empty: Starting Initial Data Fill")
             
             if audit_logger:
-                print(f"Audit logging enabled for initial data upload (ID: {audit_logger.calculation_id})")
+                print(f"Audit logging enabled for initial data upload ")
             else:
                 print("Audit logging disabled for initial data upload")
             
@@ -235,6 +234,8 @@ class LexAppConfig(GenericAppConfig):
                                   set(list(apps.get_app_config(repo_name).models.values())
                                       + list(apps.get_app_config(repo_name).models.values()))}
             nest_asyncio.apply()
+
+
             asyncio.run(self.async_ready(generic_app_models))
 
     async def async_ready(self, generic_app_models):
@@ -281,26 +282,25 @@ class LexAppConfig(GenericAppConfig):
             audit_enabled = is_audit_logging_enabled()
             calculation_id = None
             
-            if audit_enabled:
-                # Generate calculation ID for continuity between async_ready and task execution
-                try:
-                    from lex.lex_app.logging.InitialDataAuditLogger import InitialDataAuditLogger
-                    temp_logger = InitialDataAuditLogger()
-                    calculation_id = temp_logger.calculation_id
-                    print(f"Generated calculation ID for task execution: {calculation_id}")
-                except Exception as e:
-                    print(f"Warning: Failed to generate calculation ID for task execution: {e}")
-                    print("Task will generate its own calculation ID")
-                    traceback.print_exc()
-                    calculation_id = None
+            # if audit_enabled:
+                # # Generate calculation ID for continuity between async_ready and task execution
+                # try:
+                #     from lex.lex_app.logging.InitialDataAuditLogger import InitialDataAuditLogger
+                #     temp_logger = InitialDataAuditLogger()
+                #     print(f"Generated calculation ID for task execution: {calculation_id}")
+                # except Exception as e:
+                #     print(f"Warning: Failed to generate calculation ID for task execution: {e}")
+                #     print("Task will generate its own calculation ID")
+                #     traceback.print_exc()
+                #     calculation_id = None
             
             if (os.getenv("DEPLOYMENT_ENVIRONMENT")
                     and os.getenv("ARCHITECTURE") == "MQ/Worker"):
                 # Pass audit logging parameters to Celery task
-                load_data.delay(test, generic_app_models, audit_enabled, calculation_id)
+                load_data.delay(test, generic_app_models, audit_enabled)
             else:
                 # Pass audit logging parameters to thread
-                x = threading.Thread(target=load_data, args=(test, generic_app_models, audit_enabled, calculation_id))
+                x = threading.Thread(target=load_data, args=(test, generic_app_models, audit_enabled))
                 x.start()
         else:
             test.test_path = _authentication_settings.initial_data_load

@@ -1,13 +1,13 @@
 """
 Cache management utilities for the CalculationLog system.
 
-This module provides the CacheManager class for handling Redis cache operations
-including message storage, cache cleanup, and graceful degradation when Redis
+This module provides the CacheManager class for handling cache operations
+including message storage, cache cleanup, and graceful degradation when Cache
 is unavailable.
 
 Note on Cache Cleanup:
 The cleanup_calculation() method attempts to find cache keys by pattern matching.
-However, pattern-based key discovery can be unreliable depending on the Redis
+However, pattern-based key discovery can be unreliable depending on the
 configuration and django-redis version. If pattern matching fails, the method
 gracefully degrades by skipping cleanup - this is acceptable since cache entries
 have a TTL and will expire naturally (default: 1 week).
@@ -27,20 +27,20 @@ logger = logging.getLogger(__name__)
 
 class CacheManager:
     """
-    Manages Redis cache operations for calculation logging.
+    Manages cache operations for calculation logging.
     
-    This class provides static methods for storing log messages in Redis cache,
-    cleaning up cache entries after calculations complete, and handling Redis
+    This class provides static methods for storing log messages in cache,
+    cleaning up cache entries after calculations complete, and handling
     unavailability gracefully.
     """
     
     CACHE_TIMEOUT = 60 * 60 * 24 * 7  # Cache for one week
-    REDIS_CACHE_NAME = "redis"
-    
+    CALC_CACHE_NAME = "default"
+
     @staticmethod
     def store_message(cache_key: str, message: str) -> bool:
         """
-        Store log message in Redis cache with error handling.
+        Store log message in cache with error handling.
         
         Args:
             cache_key: The cache key to store the message under
@@ -53,27 +53,29 @@ class CacheManager:
             CacheOperationError: If cache operation fails and graceful degradation is disabled
         """
         try:
-            redis_cache = caches[CacheManager.REDIS_CACHE_NAME]
+            cache = caches[CacheManager.CALC_CACHE_NAME]
+            print("System cache:", caches)
             
             # Get existing message from cache, append new message
-            existing_message = redis_cache.get(cache_key, "")
+            existing_message = cache.get(cache_key, "")
             updated_message = existing_message + "\n" + message if existing_message else message
             
             # Store updated message with timeout
-            redis_cache.set(cache_key, updated_message, timeout=CacheManager.CACHE_TIMEOUT)
+            cache.set(cache_key, updated_message)
             
             logger.debug(f"Successfully stored message in cache with key: {cache_key}")
             return True
             
         except InvalidCacheBackendError:
-            logger.warning(f"Redis cache backend not available, skipping cache storage for key: {cache_key}")
+            logger.warning(f"Cache backend not available, skipping cache storage for key: {cache_key}")
             return False
             
         except Exception as e:
             logger.error(f"Failed to store message in cache with key {cache_key}: {str(e)}")
             # Graceful degradation - don't raise exception, just log and continue
             return False
-    
+
+
     @staticmethod
     def cleanup_calculation(calculation_id: str, specific_keys: Optional[List[str]] = None) -> CacheCleanupResult:
         """
@@ -93,7 +95,8 @@ class CacheManager:
         errors = []
         
         try:
-            redis_cache = caches[CacheManager.REDIS_CACHE_NAME]
+            cache = caches[CacheManager.CALC_CACHE_NAME]
+
             
             # Determine which keys to clean up
             if specific_keys is not None:
@@ -102,12 +105,12 @@ class CacheManager:
                 logger.debug(f"Cleaning up {len(specific_keys)} specific cache keys for calculation {calculation_id}")
             else:
                 # Try to find keys by pattern matching
-                pattern_keys = CacheManager._find_calculation_keys(redis_cache, calculation_id)
+                pattern_keys = CacheManager._find_calculation_keys(cache, calculation_id)
                 logger.debug(f"Found {len(pattern_keys)} cache keys by pattern matching for calculation {calculation_id}")
             
             for key in pattern_keys:
                 try:
-                    redis_cache.delete(key)
+                    cache.delete(key)
                     cleaned_keys.append(key)
                     logger.debug(f"Successfully cleaned cache key: {key}")
                 except Exception as e:
@@ -126,7 +129,7 @@ class CacheManager:
             )
             
         except InvalidCacheBackendError:
-            error_msg = "Redis cache backend not available for cleanup"
+            error_msg = "Cache backend not available for cleanup"
             logger.warning(error_msg)
             return CacheCleanupResult(
                 success=False,
@@ -161,7 +164,7 @@ class CacheManager:
         return f"{calculation_record}_{calc_id}"
     
     @staticmethod
-    def _find_calculation_keys(redis_cache, calculation_id: str) -> List[str]:
+    def _find_calculation_keys(cache, calculation_id: str) -> List[str]:
         """
         Find all cache keys associated with a calculation ID.
         
@@ -170,7 +173,7 @@ class CacheManager:
         handles failures and returns an empty list when keys cannot be found.
         
         Args:
-            redis_cache: The Redis cache instance
+            cache: The cache instance
             calculation_id: The calculation ID to search for
             
         Returns:
@@ -179,15 +182,15 @@ class CacheManager:
         try:
             # For django-redis, try to use the iter_keys method if available
             # This is more reliable than trying to access the underlying client
-            if hasattr(redis_cache, 'iter_keys'):
+            if hasattr(cache, 'iter_keys'):
                 pattern = f"*_{calculation_id}"
-                matching_keys = list(redis_cache.iter_keys(pattern))
+                matching_keys = list(cache.iter_keys(pattern))
                 return [str(key) for key in matching_keys if key]
             
             # Fallback: Try the keys method
-            elif hasattr(redis_cache, 'keys'):
+            elif hasattr(cache, 'keys'):
                 pattern = f"*_{calculation_id}"
-                matching_keys = redis_cache.keys(pattern)
+                matching_keys = cache.keys(pattern)
                 return [str(key) for key in matching_keys if key]
             
             else:
@@ -215,11 +218,11 @@ class CacheManager:
             Optional[str]: The cached message if found, None otherwise
         """
         try:
-            redis_cache = caches[CacheManager.REDIS_CACHE_NAME]
-            return redis_cache.get(cache_key)
+            cache = caches[CacheManager.CALC_CACHE_NAME]
+            return cache.get(cache_key)
             
         except InvalidCacheBackendError:
-            logger.warning(f"Redis cache backend not available, cannot retrieve key: {cache_key}")
+            logger.warning(f"Cache backend not available, cannot retrieve key: {cache_key}")
             return None
             
         except Exception as e:
@@ -229,16 +232,16 @@ class CacheManager:
     @staticmethod
     def is_cache_available() -> bool:
         """
-        Check if Redis cache is available.
+        Check if cache is available.
         
         Returns:
             bool: True if cache is available, False otherwise
         """
         try:
-            redis_cache = caches[CacheManager.REDIS_CACHE_NAME]
+            cache = caches[CacheManager.CALC_CACHE_NAME]
             # Try a simple operation to test connectivity
-            redis_cache.set("__cache_test__", "test", timeout=1)
-            redis_cache.delete("__cache_test__")
+            cache.set("__cache_test__", "test", timeout=1)
+            cache.delete("__cache_test__")
             return True
             
         except Exception:
@@ -259,13 +262,13 @@ class CacheManager:
             bool: True if the key was successfully deleted, False otherwise
         """
         try:
-            redis_cache = caches[CacheManager.REDIS_CACHE_NAME]
-            redis_cache.delete(cache_key)
+            cache = caches[CacheManager.CALC_CACHE_NAME]
+            cache.delete(cache_key)
             logger.debug(f"Successfully deleted cache key: {cache_key}")
             return True
             
         except InvalidCacheBackendError:
-            logger.warning(f"Redis cache backend not available, cannot delete key: {cache_key}")
+            logger.warning(f"Cache backend not available, cannot delete key: {cache_key}")
             return False
             
         except Exception as e:

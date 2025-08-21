@@ -13,7 +13,10 @@ from django.core.files import File
 from django.core.files.storage import default_storage
 from django.db import models
 
+from lex.lex_app.rest_api.context import OperationContext
 from lex.lex_app.logging.config import is_audit_logging_enabled
+from lex.lex_app.logging.CalculationLog import CalculationLog
+from lex.lex_app.logging.model_context import model_logging_context
 
 from lex.lex_app import settings
 
@@ -74,7 +77,12 @@ class ProcessAdminTestCase(TestCase):
 
                     cache.set(threading.get_ident(), str(object['class']) + "_" + action)
                     self.tagged_objects[tag].save()
-                    
+
+                    calculation_id = audit_log.calculation_id if audit_enabled else None
+
+                    if audit_enabled and CalculationLog.objects.filter(calculationId=calculation_id).count() < 0:
+                        audit_log.calculation_id = None
+                        audit_log.save()
                     # Mark audit log as successful if audit logging is enabled
                     if audit_enabled and audit_log:
                         audit_logger.mark_operation_success(audit_log)
@@ -104,9 +112,15 @@ class ProcessAdminTestCase(TestCase):
 
                         cache.set(threading.get_ident(),
                                   str(object['class']) + "_" + action + "_" + str(self.tagged_objects[tag].pk))
-                        self.tagged_objects[tag].save()
-                        
+
+                        calculation_id = audit_log.calculation_id if audit_enabled else None
+                        with OperationContext({}, calculation_id):
+                            self.tagged_objects[tag].save()
+
                         # Mark audit log as successful if audit logging is enabled
+                        if audit_enabled and CalculationLog.objects.filter(calculationId=calculation_id).count() < 0:
+                            audit_log.calculation_id = None
+                            audit_log.save()
                         if audit_enabled and audit_log:
                             audit_logger.mark_operation_success(audit_log)
                             
@@ -158,13 +172,20 @@ class ProcessAdminTestCase(TestCase):
                     object['parameters'] = self.replace_tagged_parameters(object['parameters'])
                     
                     # Log audit entry before creation if audit logging is enabled
+                    calculation_id = audit_logger.generate_calculation_id()
                     if audit_enabled:
-                        audit_log = audit_logger.log_object_creation(klass, object['parameters'], tag)
+                        audit_log = audit_logger.log_object_creation(klass, object['parameters'], tag, None)
                     
                     self.tagged_objects[tag] = klass(**object['parameters'])
                     cache.set(threading.get_ident(), str(object['class']) + "_" + action)
-                    self.tagged_objects[tag].save()
-                    
+
+                    if "Investor" in klass.__name__ and "Track" in klass.__name__:
+                        print("Break here")
+
+                    with OperationContext({}, calculation_id, audit_log=audit_log):
+                        with model_logging_context(self.tagged_objects[tag]):
+                            self.tagged_objects[tag].save()
+
                     # Mark audit log as successful if audit logging is enabled
                     if audit_enabled and audit_log:
                         audit_logger.mark_operation_success(audit_log)
@@ -174,16 +195,20 @@ class ProcessAdminTestCase(TestCase):
                     self.tagged_objects[tag] = klass.objects.filter(**object['filter_parameters']).first()
                     if self.tagged_objects[tag] is not None:
                         # Log audit entry before update if audit logging is enabled
+                        calculation_id = audit_logger.generate_calculation_id()
                         if audit_enabled:
-                            audit_log = audit_logger.log_object_update(klass, self.tagged_objects[tag], object['parameters'], tag)
+                            audit_log = audit_logger.log_object_update(klass, self.tagged_objects[tag], object['parameters'], tag, None)
                         
                         for key in object['parameters']:
                             setattr(self.tagged_objects[tag], key, object['parameters'][key])
 
                         cache.set(threading.get_ident(),
                                   str(object['class']) + "_" + action + "_" + str(self.tagged_objects[tag].pk))
-                        self.tagged_objects[tag].save()
-                        
+
+                        with OperationContext({}, calculation_id, audit_log=audit_log):
+                            with model_logging_context(self.tagged_objects[tag]):
+                                self.tagged_objects[tag].save()
+
                         # Mark audit log as successful if audit logging is enabled
                         if audit_enabled and audit_log:
                             audit_logger.mark_operation_success(audit_log)
@@ -196,6 +221,7 @@ class ProcessAdminTestCase(TestCase):
                     klass.objects.filter(**object['filter_parameters']).delete()
                     
                     # Mark audit log as successful if audit logging is enabled
+
                     if audit_enabled and audit_log:
                         audit_logger.mark_operation_success(audit_log)
                         

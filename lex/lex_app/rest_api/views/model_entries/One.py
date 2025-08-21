@@ -73,7 +73,7 @@ class OneModelEntry(
 
                 try:
                     response = UpdateModelMixin.update(self, request, *args, **kwargs)
-                    
+
 
                 except Exception as e:
                     raise APIException(

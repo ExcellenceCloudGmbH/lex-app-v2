@@ -31,9 +31,11 @@ class InitialDataAuditLogger:
         Args:
             calculation_id: Optional calculation ID. If not provided, a unique ID will be generated.
         """
-        self.calculation_id = calculation_id or self._generate_calculation_id()
         self.batch_manager = AuditLogBatchManager()
-    
+    def generate_calculation_id(self) -> str:
+        return self._generate_calculation_id()
+
+
     def _generate_calculation_id(self) -> str:
         """Generate a unique calculation ID for initial data upload sessions."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -41,7 +43,7 @@ class InitialDataAuditLogger:
         return f"initial_data_upload_{timestamp}_{unique_id}"
     
     def log_object_creation(self, model_class: Type[Model], instance_data: Dict[str, Any], 
-                          tag: Optional[str] = None) -> Optional[AuditLog]:
+                          tag: Optional[str] = None, calculation_id=None) -> Optional[AuditLog]:
         """
         Log object creation operation.
         
@@ -53,6 +55,9 @@ class InitialDataAuditLogger:
         Returns:
             AuditLog: The created audit log entry, or None if logging failed
         """
+
+
+
         try:
             resource = model_class.__name__.lower()
             
@@ -64,7 +69,7 @@ class InitialDataAuditLogger:
                     f"Failed to serialize payload for {resource} creation. "
                     f"Using fallback serialization. Error: {e}",
                     extra={
-                        'calculation_id': self.calculation_id,
+                        'calculation_id': calculation_id,
                         'resource': resource,
                         'action': 'create',
                         'tag': tag
@@ -84,7 +89,7 @@ class InitialDataAuditLogger:
                     resource=resource,
                     action="create",
                     payload=payload,
-                    calculation_id=self.calculation_id
+                    calculation_id=calculation_id
                 )
                 
                 # Create initial status record
@@ -94,7 +99,7 @@ class InitialDataAuditLogger:
             logger.debug(
                 f"Successfully created audit log for {resource} creation",
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': calculation_id,
                     'audit_log_id': audit_log.id,
                     'resource': resource,
                     'action': 'create',
@@ -109,7 +114,7 @@ class InitialDataAuditLogger:
             logger.error(
                 error_msg,
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': calculation_id,
                     'resource': model_class.__name__.lower(),
                     'action': 'create',
                     'tag': tag,
@@ -121,7 +126,7 @@ class InitialDataAuditLogger:
             return None
     
     def log_object_update(self, model_class: Type[Model], instance: Model, 
-                         update_data: Dict[str, Any], tag: Optional[str] = None) -> Optional[AuditLog]:
+                         update_data: Dict[str, Any], tag: Optional[str] = None, calculation_id=None) -> Optional[AuditLog]:
         """
         Log object update operation.
         
@@ -136,7 +141,7 @@ class InitialDataAuditLogger:
         """
         try:
             resource = model_class.__name__.lower()
-            
+
             # Safely get instance primary key
             try:
                 instance_pk = instance.pk
@@ -144,7 +149,7 @@ class InitialDataAuditLogger:
                 logger.warning(
                     f"Failed to get primary key for {resource} update. Using fallback.",
                     extra={
-                        'calculation_id': self.calculation_id,
+                        'calculation_id': calculation_id,
                         'resource': resource,
                         'action': 'update',
                         'tag': tag,
@@ -160,7 +165,7 @@ class InitialDataAuditLogger:
                 logger.warning(
                     f"Failed to serialize update data for {resource}. Using fallback serialization.",
                     extra={
-                        'calculation_id': self.calculation_id,
+                        'calculation_id': calculation_id,
                         'resource': resource,
                         'action': 'update',
                         'tag': tag,
@@ -188,7 +193,7 @@ class InitialDataAuditLogger:
                     resource=resource,
                     action="update",
                     payload=payload,
-                    calculation_id=self.calculation_id
+                    calculation_id=calculation_id
                 )
                 
                 # Create initial status record
@@ -198,7 +203,7 @@ class InitialDataAuditLogger:
             logger.debug(
                 f"Successfully created audit log for {resource} update",
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': calculation_id,
                     'audit_log_id': audit_log.id,
                     'resource': resource,
                     'action': 'update',
@@ -214,7 +219,7 @@ class InitialDataAuditLogger:
             logger.error(
                 error_msg,
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': calculation_id,
                     'resource': model_class.__name__.lower(),
                     'action': 'update',
                     'tag': tag,
@@ -248,7 +253,7 @@ class InitialDataAuditLogger:
                 logger.warning(
                     f"Failed to serialize filter parameters for {resource} deletion. Using fallback serialization.",
                     extra={
-                        'calculation_id': self.calculation_id,
+                        'calculation_id': None,
                         'resource': resource,
                         'action': 'delete',
                         'tag': tag,
@@ -273,7 +278,7 @@ class InitialDataAuditLogger:
                     resource=resource,
                     action="delete",
                     payload=payload,
-                    calculation_id=self.calculation_id
+                    calculation_id=None
                 )
                 
                 # Create initial status record
@@ -283,7 +288,7 @@ class InitialDataAuditLogger:
             logger.debug(
                 f"Successfully created audit log for {resource} deletion",
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': None,
                     'audit_log_id': audit_log.id,
                     'resource': resource,
                     'action': 'delete',
@@ -298,7 +303,7 @@ class InitialDataAuditLogger:
             logger.error(
                 error_msg,
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': None,
                     'resource': model_class.__name__.lower(),
                     'action': 'delete',
                     'tag': tag,
@@ -319,13 +324,14 @@ class InitialDataAuditLogger:
         if audit_log is None:
             logger.debug("Skipping success marking for None audit log")
             return
-            
+
+        calculation_id = audit_log.calculation_id
         try:
             self.batch_manager.mark_success(audit_log)
             logger.debug(
                 f"Marked audit log {audit_log.id} as successful",
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': calculation_id,
                     'audit_log_id': audit_log.id,
                     'resource': audit_log.resource,
                     'action': audit_log.action
@@ -335,7 +341,7 @@ class InitialDataAuditLogger:
             logger.error(
                 f"Failed to mark audit log {audit_log.id} as successful: {e}",
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': calculation_id,
                     'audit_log_id': audit_log.id,
                     'error': str(e),
                     'traceback': traceback.format_exc()
@@ -354,13 +360,16 @@ class InitialDataAuditLogger:
         if audit_log is None:
             logger.debug("Skipping failure marking for None audit log")
             return
-            
+
+
+        calculation_id = audit_log.calculation_id
+
         try:
             self.batch_manager.mark_failure(audit_log, error_msg)
             logger.warning(
                 f"Marked audit log {audit_log.id} as failed: {error_msg}",
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': calculation_id,
                     'audit_log_id': audit_log.id,
                     'resource': audit_log.resource,
                     'action': audit_log.action,
@@ -371,7 +380,7 @@ class InitialDataAuditLogger:
             logger.error(
                 f"Failed to mark audit log {audit_log.id} as failed: {e}",
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': calculation_id,
                     'audit_log_id': audit_log.id,
                     'error': str(e),
                     'original_error_msg': error_msg,
@@ -387,25 +396,26 @@ class InitialDataAuditLogger:
         Returns:
             Dict containing summary statistics of the audit logging session
         """
+        calculation_id = None
         try:
             logger.info(
-                f"Finalizing audit logging batch for calculation ID: {self.calculation_id}",
-                extra={'calculation_id': self.calculation_id}
+                f"Finalizing audit logging batch for calculation ID: {calculation_id}",
+                extra={'calculation_id': calculation_id}
             )
-            
+
             # Flush any remaining batch operations
             updated_count = 0
             try:
                 updated_count = self.batch_manager.flush_batch()
                 logger.debug(
                     f"Flushed {updated_count} batch operations",
-                    extra={'calculation_id': self.calculation_id, 'updated_count': updated_count}
+                    extra={'calculation_id': calculation_id, 'updated_count': updated_count}
                 )
             except Exception as e:
                 logger.error(
                     f"Failed to flush batch operations: {e}",
                     extra={
-                        'calculation_id': self.calculation_id,
+                        'calculation_id': calculation_id,
                         'error': str(e),
                         'traceback': traceback.format_exc()
                     }
@@ -413,7 +423,7 @@ class InitialDataAuditLogger:
             
             # Generate summary statistics with error handling
             summary = {
-                'calculation_id': self.calculation_id,
+                'calculation_id': calculation_id,
                 'total_audit_logs': 0,
                 'successful_operations': 0,
                 'failed_operations': 0,
@@ -421,76 +431,77 @@ class InitialDataAuditLogger:
                 'batch_updates_processed': updated_count,
                 'statistics_errors': []
             }
-            
-            try:
-                summary['total_audit_logs'] = AuditLog.objects.filter(calculation_id=self.calculation_id).count()
-            except Exception as e:
-                error_msg = f"Failed to count total audit logs: {e}"
-                summary['statistics_errors'].append(error_msg)
-                logger.error(error_msg, extra={'calculation_id': self.calculation_id})
-            
-            try:
-                summary['successful_operations'] = AuditLogStatus.objects.filter(
-                    auditlog__calculation_id=self.calculation_id,
-                    status='success'
-                ).count()
-            except Exception as e:
-                error_msg = f"Failed to count successful operations: {e}"
-                summary['statistics_errors'].append(error_msg)
-                logger.error(error_msg, extra={'calculation_id': self.calculation_id})
-            
-            try:
-                summary['failed_operations'] = AuditLogStatus.objects.filter(
-                    auditlog__calculation_id=self.calculation_id,
-                    status='failure'
-                ).count()
-            except Exception as e:
-                error_msg = f"Failed to count failed operations: {e}"
-                summary['statistics_errors'].append(error_msg)
-                logger.error(error_msg, extra={'calculation_id': self.calculation_id})
-            
-            try:
-                summary['pending_operations'] = AuditLogStatus.objects.filter(
-                    auditlog__calculation_id=self.calculation_id,
-                    status='pending'
-                ).count()
-            except Exception as e:
-                error_msg = f"Failed to count pending operations: {e}"
-                summary['statistics_errors'].append(error_msg)
-                logger.error(error_msg, extra={'calculation_id': self.calculation_id})
-            
-            # Log summary
-            logger.info(
-                f"Audit logging finalization complete. "
-                f"Total: {summary['total_audit_logs']}, "
-                f"Success: {summary['successful_operations']}, "
-                f"Failed: {summary['failed_operations']}, "
-                f"Pending: {summary['pending_operations']}",
-                extra={
-                    'calculation_id': self.calculation_id,
-                    'summary': summary
-                }
-            )
-            
-            # Remove empty statistics_errors list for cleaner output
-            if not summary['statistics_errors']:
-                del summary['statistics_errors']
-            
             return summary
-            
+
+        #     try:
+        #         summary['total_audit_logs'] = AuditLog.objects.filter(calculation_id=calculation_id).count()
+        #     except Exception as e:
+        #         error_msg = f"Failed to count total audit logs: {e}"
+        #         summary['statistics_errors'].append(error_msg)
+        #         logger.error(error_msg, extra={'calculation_id': calculation_id})
+        #
+        #     try:
+        #         summary['successful_operations'] = AuditLogStatus.objects.filter(
+        #             auditlog__calculation_id=calculation_id,
+        #             status='success'
+        #         ).count()
+        #     except Exception as e:
+        #         error_msg = f"Failed to count successful operations: {e}"
+        #         summary['statistics_errors'].append(error_msg)
+        #         logger.error(error_msg, extra={'calculation_id': calculation_id})
+        #
+        #     try:
+        #         summary['failed_operations'] = AuditLogStatus.objects.filter(
+        #             auditlog__calculation_id=calculation_id,
+        #             status='failure'
+        #         ).count()
+        #     except Exception as e:
+        #         error_msg = f"Failed to count failed operations: {e}"
+        #         summary['statistics_errors'].append(error_msg)
+        #         logger.error(error_msg, extra={'calculation_id': calculation_id})
+        #
+        #     try:
+        #         summary['pending_operations'] = AuditLogStatus.objects.filter(
+        #             auditlog__calculation_id=calculation_id,
+        #             status='pending'
+        #         ).count()
+        #     except Exception as e:
+        #         error_msg = f"Failed to count pending operations: {e}"
+        #         summary['statistics_errors'].append(error_msg)
+        #         logger.error(error_msg, extra={'calculation_id': calculation_id})
+        #
+        #     # Log summary
+        #     logger.info(
+        #         f"Audit logging finalization complete. "
+        #         f"Total: {summary['total_audit_logs']}, "
+        #         f"Success: {summary['successful_operations']}, "
+        #         f"Failed: {summary['failed_operations']}, "
+        #         f"Pending: {summary['pending_operations']}",
+        #         extra={
+        #             'calculation_id': calculation_id,
+        #             'summary': summary
+        #         }
+        #     )
+        #
+        #     # Remove empty statistics_errors list for cleaner output
+        #     if not summary['statistics_errors']:
+        #         del summary['statistics_errors']
+        #
+        #     return summary
+
         except Exception as e:
             error_msg = f"Critical error during batch finalization: {e}"
             logger.error(
                 error_msg,
                 extra={
-                    'calculation_id': self.calculation_id,
+                    'calculation_id': calculation_id,
                     'error': str(e),
                     'traceback': traceback.format_exc()
                 }
             )
             # Return minimal summary on critical error
             return {
-                'calculation_id': self.calculation_id,
+                'calculation_id': calculation_id,
                 'finalization_error': error_msg,
                 'batch_updates_processed': 0
             }

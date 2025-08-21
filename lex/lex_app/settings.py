@@ -306,6 +306,11 @@ CACHES = {
             "IGNORE_EXCEPTIONS": True,
         },
     },
+    "local": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "unique-snowflake",
+    }
+
 }
 
 

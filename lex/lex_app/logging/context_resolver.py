@@ -11,8 +11,8 @@ from typing import Optional
 
 from django.contrib.contenttypes.models import ContentType
 
-from lex.lex_app.rest_api.context import context_id
-from lex.lex_app.logging.model_context import _model_stack
+from lex.lex_app.rest_api.context import operation_context
+from lex.lex_app.logging.model_context import _model_context
 from lex.lex_app.logging.AuditLog import AuditLog
 from lex.lex_app.logging.data_models import ContextInfo, ContextResolutionError
 
@@ -23,8 +23,8 @@ class ContextResolver:
     """
     Resolves and integrates dual context systems for calculation logging.
     
-    This class combines operation context (from context_id) and model context
-    (from _model_stack) into a unified ContextInfo object that can be used
+    This class combines operation context (from operation_context) and model context
+    (from ModelContext) into a unified ContextInfo object that can be used
     throughout the calculation logging system.
     """
     
@@ -34,8 +34,8 @@ class ContextResolver:
         Resolve current context by integrating both context systems.
         
         Extracts:
-        - Operation context from context_id (calculation_id, request_obj)
-        - Model context from _model_stack (current/parent models)
+        - Operation context from operation_context (calculation_id, request_obj)
+        - Model context from ModelContext (current/parent models)
         
         Returns:
             ContextInfo: Unified context information for logging operations
@@ -46,7 +46,7 @@ class ContextResolver:
         """
         try:
             # Extract calculation_id from operation context
-            context_data = context_id.get()
+            context_data = operation_context.get()
             calculation_id = context_data.get('calculation_id')
             
             if not calculation_id:
@@ -57,7 +57,11 @@ class ContextResolver:
             
             # Resolve AuditLog using calculation_id
             try:
-                audit_log = AuditLog.objects.get(calculation_id=calculation_id)
+                audit_log = context_data.get('audit_log_temp') or AuditLog.objects.get(calculation_id=calculation_id)
+                if audit_log.calculation_id == None:
+                    audit_log.calculation_id = calculation_id
+                    audit_log.save()
+
             except AuditLog.DoesNotExist:
                 raise ContextResolutionError(
                     f"AuditLog not found for calculation_id: {calculation_id}",
@@ -69,41 +73,38 @@ class ContextResolver:
                     calculation_id=calculation_id
                 )
             
-            # Extract model stack from model context
-            stack = _model_stack.get()
-            stack_length = len(stack) if stack else 0
+            # Extract model context using new ModelContext structure
+            model_ctx = _model_context.get()['model_context']
             
-            # Determine current and parent models
-            current_model = None
-            parent_model = None
+            # Determine current and parent models using direct property access
+            current_model = model_ctx.current
+            parent_model = model_ctx.parent
             current_record = None
             parent_record = None
             content_type = None
             parent_content_type = None
             
-            if stack_length > 0:
-                current_model = stack[-1]
-                if current_model:
-                    try:
-                        content_type = ContentType.objects.get_for_model(current_model)
-                        current_record = f"{current_model._meta.model_name}_{current_model.pk}"
-                    except Exception as e:
-                        logger.warning(
-                            f"Error resolving ContentType for current model: {e}",
-                            extra={'calculation_id': calculation_id}
-                        )
+            # Process current model if it exists
+            if current_model:
+                try:
+                    content_type = ContentType.objects.get_for_model(current_model)
+                    current_record = f"{current_model._meta.model_name}_{current_model.pk}"
+                except Exception as e:
+                    logger.warning(
+                        f"Error resolving ContentType for current model: {e}",
+                        extra={'calculation_id': calculation_id}
+                    )
             
-            if stack_length > 1:
-                parent_model = stack[-2]
-                if parent_model:
-                    try:
-                        parent_content_type = ContentType.objects.get_for_model(parent_model)
-                        parent_record = f"{parent_model._meta.model_name}_{parent_model.pk}"
-                    except Exception as e:
-                        logger.warning(
-                            f"Error resolving ContentType for parent model: {e}",
-                            extra={'calculation_id': calculation_id}
-                        )
+            # Process parent model if it exists
+            if parent_model:
+                try:
+                    parent_content_type = ContentType.objects.get_for_model(parent_model)
+                    parent_record = f"{parent_model._meta.model_name}_{parent_model.pk}"
+                except Exception as e:
+                    logger.warning(
+                        f"Error resolving ContentType for parent model: {e}",
+                        extra={'calculation_id': calculation_id}
+                    )
             
             # Create and return unified ContextInfo
             context_info = ContextInfo(
@@ -121,7 +122,6 @@ class ContextResolver:
                 f"Context resolved successfully for calculation_id: {calculation_id}",
                 extra={
                     'calculation_id': calculation_id,
-                    'stack_length': stack_length,
                     'has_current_model': current_model is not None,
                     'has_parent_model': parent_model is not None
                 }
@@ -136,12 +136,13 @@ class ContextResolver:
             # Wrap any other exceptions in ContextResolutionError
             calculation_id = None
             try:
-                calculation_id = context_id.get().get('calculation_id')
+                calculation_id = operation_context.get('calculation_id')
             except Exception:
                 pass
             
             raise ContextResolutionError(
                 f"Unexpected error during context resolution: {str(e)}",
                 calculation_id=calculation_id,
-                stack_length=len(_model_stack.get()) if _model_stack.get() else 0
+                has_current_model=model_ctx.current,
+                has_parent_model=model_ctx.parent
             )
