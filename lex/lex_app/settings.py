@@ -493,7 +493,7 @@ SIMPLE_JWT = {
 #     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/certs"
 # )
 OIDC_RP_CLIENT_ID = "LEX_LOCAL_ENV"
-OIDC_RP_CLIENT_SECRET = "O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF"
+OIDC_RP_CLIENT_SECRET = "IYT2HQyuPuoKN3ff73eZUdJc29YWyET5"
 # OIDC_OP_AUTHORIZATION_ENDPOINT = (
 #     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/auth"
 # )
@@ -521,7 +521,7 @@ OIDC_RP_CLIENT_SECRET = "O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF"
 # ALLOW_LOGOUT_GET_METHOD = True
 
 OIDC_OP_DISCOVERY_DOCUMENT_URL = (
-    "http://exc-testing.com:8080/realms/lex/.well-known/openid-configuration"
+    "http://exc-testing.com/realms/lex/.well-known/openid-configuration"
 )
 # OIDC_CALLBACK_CLASS = "lex.lex_app.rest_api.views.authentication.CustomOIDCAuthenticationCallbackView.CustomOIDCAuthenticationCallbackView"
 AUTHENTICATION_BACKENDS = (
@@ -540,6 +540,7 @@ CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:8000",
+    "*"
     # add any other hosts your front-end uses
 ]
 
@@ -594,6 +595,7 @@ CORS_ORIGIN_WHITELIST = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:8000",
+    "*"
 ]
 
 LANGUAGE_CODE = "en-us"
@@ -671,3 +673,16 @@ LOGGING = {
 
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = None
+
+# KEYCLOAK_ADMIN_CLIENT_ID = os.getenv("KEYCLOAK_ADMIN_CLIENT_ID", "admin-cli")
+# KEYCLOAK_ADMIN_CLIENT_SECRET = os.getenv("KEYCLOAK_ADMIN_CLIENT_SECRET", "Tdl6AMVuaWmYPLhE1RYMnS2Ydejc9mEz")
+
+KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://exc-testing.com/")
+KEYCLOAK_REALM_NAME = os.getenv("KEYCLOAK_REALM_NAME", "lex")
+OIDC_RP_CLIENT_ID = os.getenv("OIDC_RP_CLIENT_ID", "LEX_LOCAL_ENV")
+OIDC_RP_CLIENT_SECRET = os.getenv("OIDC_RP_CLIENT_SECRET", "IYT2HQyuPuoKN3ff73eZUdJc29YWyET5")
+OIDC_RP_CLIENT_UUID = "3e5eeafe-a3b3-469e-9db3-54cff7108d70"
+
+# OIDC_OP_TOKEN_ENDPOINT = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM_NAME}/protocol/openid-connect/token"
+# OIDC_OP_LOGOUT_ENDPOINT = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM_NAME}/protocol/openid-connect/logout"
+# LOGOUT_REDIRECT_URL = os.getenv("LOGOUT_REDIRECT_URL", "http://exc-testing.com/logout")
