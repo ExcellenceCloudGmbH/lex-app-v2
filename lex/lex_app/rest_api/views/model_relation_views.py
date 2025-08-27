@@ -32,8 +32,8 @@ class ModelStructureObtainView(APIView):
         if not access_token:
             return []
 
-        kc_manager = KeycloakManager()
-        uma_permissions = kc_manager.get_uma_permissions(access_token)
+        # kc_manager = KeycloakManager()
+        # uma_permissions = kc_manager.get_uma_permissions(access_token)
 
         access_rights = []
 
@@ -42,12 +42,12 @@ class ModelStructureObtainView(APIView):
         grouped_perms = {}
 
         for perm in uma_permissions:
-            resource_name = perm.get('rsname')
+            resource_name = perm.get("rsname")
             if not resource_name:
                 continue
 
-            record_id = perm.get('resource_set_id')
-            scopes = set(perm.get('scopes', []))
+            record_id = perm.get("resource_set_id")
+            scopes = set(perm.get("scopes", []))
 
             if resource_name not in grouped_perms:
                 grouped_perms[resource_name] = {}
@@ -57,30 +57,29 @@ class ModelStructureObtainView(APIView):
                     grouped_perms[resource_name][record_id] = set()
                 grouped_perms[resource_name][record_id].update(scopes)
             else:
-                if 'model_level' not in grouped_perms[resource_name]:
-                    grouped_perms[resource_name]['model_level'] = set()
-                grouped_perms[resource_name]['model_level'].update(scopes)
+                if "model_level" not in grouped_perms[resource_name]:
+                    grouped_perms[resource_name]["model_level"] = set()
+                grouped_perms[resource_name]["model_level"].update(scopes)
 
         # Process the grouped permissions into the final access_rights list
         for resource, records in grouped_perms.items():
             # Handle record-level permissions
             for record_id, scopes in records.items():
-                if record_id == 'model_level':
+                if record_id == "model_level":
                     continue
                 for action in scopes:
-                    access_rights.append({
-                        "action": action,
-                        "resource": resource,
-                        "record": {"id": record_id}
-                    })
+                    access_rights.append(
+                        {
+                            "action": action,
+                            "resource": resource,
+                            "record": {"id": record_id},
+                        }
+                    )
 
             # Handle model-level permissions
-            if 'model_level' in records:
-                for action in records['model_level']:
-                    access_rights.append({
-                        "action": action,
-                        "resource": resource
-                    })
+            if "model_level" in records:
+                for action in records["model_level"]:
+                    access_rights.append({"action": action, "resource": resource})
 
         return access_rights
 
@@ -88,6 +87,9 @@ class ModelStructureObtainView(APIView):
         """
         Recursively remove nodes the user cannot read based on Keycloak permissions.
         """
+        user_perms = KeycloakManager().get_uma_permissions(
+            request.session["oidc_access_token"]
+        )
         for key in list(tree.keys()):
             node = tree[key]
             # If it's a leaf node representing a model, check read permission
@@ -99,10 +101,19 @@ class ModelStructureObtainView(APIView):
                     # Temporarily attach the request to the context for the permission check
                     # This is necessary for LexModel's permission methods to access the session
                     from lex.lex_app.rest_api.context import context_id
+
                     context_id.set({"request_obj": request})
                     temp = model_instance.model_class()
-
-                    if not temp.can_show():
+                    model_perms = item = next(
+                        (
+                            x
+                            for x in user_perms
+                            if x.get("rsname")
+                            == f"ArmiraCashflowDB.{temp.__class__. __name__}"
+                        ),
+                        None,
+                    )
+                    if not temp.can_list(model_perms):
                         del tree[key]
                         del temp
                         continue
@@ -114,19 +125,19 @@ class ModelStructureObtainView(APIView):
 
             # Recurse into children
             if "children" in node and isinstance(node["children"], dict):
-                self.delete_restricted_nodes_from_model_structure(node["children"], request)
+                self.delete_restricted_nodes_from_model_structure(
+                    node["children"], request
+                )
 
     def get(self, request, *args, **kwargs):
         # 1) Copy the raw tree
         structure = copy.deepcopy(self.get_model_structure_func())
 
-        kc = KeycloakManager()
-        temp = kc.get_uma_permissions(request.session['oidc_access_token'])
-        print(temp)
+        # kc = KeycloakManager()
+        # temp = kc.get_uma_permissions(request.session['oidc_access_token'])
+        # print(request.session['oidc_access_token'])
 
-
-        # 2) Prune nodes the user is not authorized to see
-        # self.delete_restricted_nodes_from_model_structure(structure, request)
+        self.delete_restricted_nodes_from_model_structure(structure, request)
 
         # 3) Annotate with serializers (unchanged)
         def annotate(subtree):
@@ -136,7 +147,9 @@ class ModelStructureObtainView(APIView):
                 except Exception:
                     container = None
                 if container and hasattr(container, "serializers_map"):
-                    node["available_serializers"] = list(container.serializers_map.keys())
+                    node["available_serializers"] = list(
+                        container.serializers_map.keys()
+                    )
                 children = node.get("children")
                 if isinstance(children, dict):
                     annotate(children)
@@ -144,8 +157,6 @@ class ModelStructureObtainView(APIView):
         annotate(structure)
 
         return Response(structure)
-
-
 
 
 class ModelStylingObtainView(APIView):
@@ -210,8 +221,6 @@ class ProcessStructure(APIView):
         process_class = self.processes[class_name]
         process_structure = process_class().get_structure()
         return Response(process_structure)
-
-
 
 
 # import copy

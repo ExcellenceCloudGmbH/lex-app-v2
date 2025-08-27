@@ -1,10 +1,13 @@
 import json
 import logging
-from urllib.parse import urlencode
 
 from django.apps.registry import apps
 from django.conf import settings
-from keycloak import KeycloakAdmin, KeycloakOpenID, KeycloakOpenIDConnection, KeycloakUMA
+from keycloak import (
+    KeycloakAdmin,
+    KeycloakOpenIDConnection,
+    KeycloakUMA,
+)
 from keycloak.exceptions import KeycloakPostError, KeycloakGetError
 from lex.lex_app.decorators.LexSingleton import LexSingleton
 
@@ -41,7 +44,7 @@ class KeycloakManager:
         self.client_uuid = settings.OIDC_RP_CLIENT_UUID
 
         # Get SSL verification setting from Django settings
-        verify_ssl = getattr(settings, 'KEYCLOAK_VERIFY_SSL', False)
+        verify_ssl = getattr(settings, "KEYCLOAK_VERIFY_SSL", False)
 
         try:
             # When initializing the OIDC client, ensure proper scopes
@@ -55,12 +58,12 @@ class KeycloakManager:
             #     # client_secret_key=settings.OIDC_RP_CLIENT_SECRET,
             #     verify=verify_ssl
             # )
-            self.conn= KeycloakOpenIDConnection(
+            self.conn = KeycloakOpenIDConnection(
                 server_url=settings.KEYCLOAK_URL,
                 client_id=settings.OIDC_RP_CLIENT_ID,
                 realm_name=self.realm_name,
                 client_secret_key=settings.OIDC_RP_CLIENT_SECRET,
-                verify=verify_ssl
+                verify=verify_ssl,
             )
             self.admin = KeycloakAdmin(connection=self.conn)
             self.uma = KeycloakUMA(connection=self.conn)
@@ -71,214 +74,92 @@ class KeycloakManager:
 
     def setup_django_model_permissions_resource_based(self):
         """
-        Initializes Keycloak UMA resources using a resource-based permission model.
-        It creates a permission with one scope, then updates it with the rest.
+        Initializes Keycloak UMA resources using a **scope-based** permission model.
+
+        Changes from previous version:
+        - Creates **one permission per scope per resource** (not one-per-policy).
+        - Each permission uses decisionStrategy="AFFIRMATIVE".
+        - Policy chains by scope:
+            * view-only scopes ("list","show")  -> policies: [admin, standard, view-only]
+            * standard-only scopes ("edit","export") -> policies: [admin, standard]
+            * admin-only scopes ("create","delete")  -> policies: [admin]
         """
         if not self.admin or not self.uma:
             logger.error("Keycloak clients not initialized. Aborting setup.")
             return
 
-        client_uuid = getattr(settings, 'OIDC_RP_CLIENT_UUID', None)
+        client_uuid = getattr(settings, "OIDC_RP_CLIENT_UUID", None)
         if not client_uuid:
-            logger.error("❌ OIDC_RP_CLIENT_UUID is not configured in settings. Aborting.")
+            logger.error(
+                "❌ OIDC_RP_CLIENT_UUID is not configured in settings. Aborting."
+            )
             return
 
-        # --- 1. Pre-load existing Keycloak configurations ---
+        # ---- Helper: create a scope-based permission even if the SDK method doesn't exist
+        def _create_scope_permission(client_id: str, payload: dict) -> dict:
+            """
+            Create a scope-based permission. Uses SDK method if present; otherwise raw POST.
+            Returns the created permission JSON.
+            """
+            create_fn = getattr(
+                self.admin, "create_client_authz_scope_based_permission", None
+            )
+            if callable(create_fn):
+                return create_fn(client_id=client_id, payload=payload)
+
+            # Fallback: direct REST call
+            import json
+
+            base_url = getattr(self.admin, "client_authz_url", None)
+            if callable(base_url):
+                url = f"{base_url(client_id)}/permission/scope"
+            else:
+                server = self.admin.server_url.rstrip("/")
+                realm = self.admin.realm_name
+                url = f"{server}/admin/realms/{realm}/clients/{client_id}/authz/resource-server/permission/scope"
+
+            resp = self.admin.connection.raw_post(url, data=json.dumps(payload))
+            return resp.json() if hasattr(resp, "json") else resp
+
+        # --- 1) Pre-load existing Keycloak configurations
         logger.info("Loading existing Keycloak configurations...")
         try:
             existing_resources = {r["name"]: r for r in self.uma.resource_set_list()}
-            existing_roles = {r["name"]: r for r in self.admin.get_client_roles(client_id=client_uuid)}
-            existing_policies = {p["name"]: p for p in self.admin.get_client_authz_policies(client_id=client_uuid)}
-            # We get all permissions to check for existence before creating
-            existing_permissions = {p["name"]: p for p in
-                                    self.admin.get_client_authz_permissions(client_id=client_uuid)}
+            existing_roles = {
+                r["name"]: r for r in self.admin.get_client_roles(client_id=client_uuid)
+            }
+            existing_policies = {
+                p["name"]: p
+                for p in self.admin.get_client_authz_policies(client_id=client_uuid)
+            }
+            existing_permissions = {
+                p["name"]: p
+                for p in self.admin.get_client_authz_permissions(client_id=client_uuid)
+            }
             logger.info("✔ Configurations loaded.")
         except KeycloakGetError as e:
             logger.error(f"❌ Could not load client configurations: {e.response_body}")
             return
 
-        # --- 2. Define and set up core policies ---
-        policy_definitions = {
-            "admin": ["list", "show", "create", "edit", "delete", "export"],
-            "standard": ["list", "show", "create", "edit", "export"],
-            "view-only": ["list", "show"],
-        }
-        policy_ids = {}
+        # --- 2) Ensure core role policies exist
+        admin_scopes = ["list", "show", "create", "edit", "delete", "export"]
+        standard_scopes = ["list", "show", "edit", "export"]
+        view_scopes = ["list", "show"]
 
-        logger.info("\n--- Setting up core policies ---")
-        # (This section for creating roles and policies remains the same as it was working correctly)
-        for policy_name in policy_definitions.keys():
-            role_id = existing_roles.get(policy_name, {}).get("id")
+        policy_ids = {}
+        for role_name in ["admin", "standard", "view-only"]:
+            role_id = existing_roles.get(role_name, {}).get("id")
             if not role_id:
-                logger.warning(f"  - Role '{policy_name}' not found. Please ensure it exists.")
+                logger.warning(
+                    f"  - Role '{role_name}' not found. Please ensure it exists."
+                )
                 continue
 
-            full_policy_name = f"Policy - {policy_name}"
+            full_policy_name = f"Policy - {role_name}"
             policy = existing_policies.get(full_policy_name)
             if policy:
-                policy_ids[policy_name] = policy["id"]
+                policy_ids[role_name] = policy["id"]
                 logger.info(f"  ✔ Policy exists: {full_policy_name}")
-            else:
-                try:
-                    roles_config = [{"id": role_id, "required": True}]
-                    policy_payload = {
-                        "name": full_policy_name, "type": "role", "logic": "POSITIVE",
-                        "decisionStrategy": "UNANIMOUS", "roles": roles_config
-                    }
-                    created_policy = self.admin.create_client_authz_role_based_policy(
-                        client_id=client_uuid, payload=policy_payload
-                    )
-                    policy_ids[policy_name] = created_policy["id"]
-                    existing_policies[full_policy_name] = created_policy
-                    logger.info(f"  ✨ Created role policy: {full_policy_name}")
-                except Exception as e:
-                    logger.error(f"  ❌ Failed to create policy {full_policy_name}: {e}")
-
-        # --- 3. Iterate over models to create resources and permissions ---
-        all_scopes = ["list", "show", "create", "edit", "delete", "export"]
-        for model in apps.get_models():
-            res_name = f"{model._meta.app_label}.{model.__name__}"
-            logger.info(f"\n--- Processing Model: {res_name} ---")
-
-            # a) Create or fetch UMA resource for the model
-            resource = existing_resources.get(res_name)
-            resource_id = None
-            if resource:
-                resource_id = resource.get("_id")
-                logger.info(f"  ✔ UMA resource exists: {res_name}")
-            else:
-                try:
-                    payload = {"name": res_name, "scopes": [{"name": s} for s in all_scopes]}
-                    created = self.uma.resource_set_create(payload)
-                    resource_id = created.get("_id")
-                    logger.info(f"  ✨ Created UMA resource: {res_name}")
-                except Exception as e:
-                    logger.error(f"  ❌ Failed to create resource {res_name}: {e}")
-                    continue
-
-            if not resource_id:
-                logger.error(f"  ❌ Could not get resource ID for {res_name}. Skipping permissions.")
-                continue
-
-            # b) **THE EXPERIMENT**: Create ONE resource-based permission per policy, then UPDATE it
-            for policy_name, scopes_for_policy in policy_definitions.items():
-                if policy_name not in policy_ids or not scopes_for_policy:
-                    continue
-
-                policy_id = policy_ids[policy_name]
-                perm_name = f"Permission - {res_name} - {policy_name}"
-
-                if perm_name in existing_permissions:
-                    logger.info(f"    ✔ Resource permission already exists: {perm_name}")
-                    continue
-
-                # 1. Create the permission with ONLY the first scope
-                try:
-                    initial_payload = {
-                        "name": perm_name, "type": "resource", "logic": "POSITIVE",
-                        "decisionStrategy": "UNANIMOUS", "resources": [resource_id],
-                        "policies": [policy_id],
-                        "scopes": [scopes_for_policy[0]],  # CRITICAL: Start with just one scope
-                    }
-                    created_perm = self.admin.create_client_authz_resource_based_permission(
-                        client_id=client_uuid, payload=initial_payload
-                    )
-                    logger.info(
-                        f"    🛡️  Created initial permission '{perm_name}' with scope: '{scopes_for_policy[0]}'")
-
-                    # 2. If there are more scopes, UPDATE the permission
-                    if len(scopes_for_policy) > 1:
-                        update_payload = created_perm
-                        update_payload['scopes'] = scopes_for_policy
-
-                        # **THE FIX**: The correct method is the generic update_client_authz_permission
-                        self.admin.update_client_authz_permission(
-                            client_id=client_uuid,
-                            permission_id=created_perm['id'],
-                            payload=update_payload
-                        )
-                        logger.info(f"    ➕ Updated permission with all scopes: {', '.join(scopes_for_policy)}")
-
-                    existing_permissions[perm_name] = created_perm
-
-                except KeycloakPostError as e:
-                    logger.error(f"    ❌ Failed to create/update permission {perm_name}: {e.response_body}")
-                except Exception as e:
-                    logger.error(f"    ❌ An unexpected error occurred for permission {perm_name}: {e}")
-
-        logger.info("\n✅ Keycloak resource-based setup complete.")
-
-    def retry(self):
-        self.initialize()
-        return bool(self.conn)
-
-    def setup_django_model_scope_based_permissions(self):
-        """
-        Initializes Keycloak UMA resources and permissions for all Django models.
-        This script uses the recommended SCOPE-BASED permission model.
-        """
-        if not self.admin or not self.uma:
-            logger.error("Keycloak clients not initialized. Aborting setup.")
-            return
-
-        client_uuid = getattr(settings, 'OIDC_RP_CLIENT_UUID', None)
-        if not client_uuid:
-            logger.error("❌ OIDC_RP_CLIENT_UUID is not configured in settings. Aborting.")
-            return
-
-        # --- 1. Pre-load existing Keycloak authorization configurations ---
-        logger.info("Loading existing Keycloak configurations...")
-        try:
-            existing_resources = {r["name"]: r for r in self.uma.resource_set_list()}
-            existing_roles = {r["name"]: r for r in self.admin.get_client_roles(client_id=client_uuid)}
-            existing_policies = {p["name"]: p for p in self.admin.get_client_authz_policies(client_id=client_uuid)}
-            existing_permissions = {p["name"]: p for p in
-                                    self.admin.get_client_authz_permissions(client_id=client_uuid)}
-            logger.info("✔ Configurations loaded.")
-        except KeycloakGetError as e:
-            logger.error(
-                f"\n❌ Could not load client configurations. "
-                f"Please check if client UUID '{client_uuid}' is correct and has 'Authorization' enabled in Keycloak."
-            )
-            logger.error(f"   Keycloak error: {e.response_body}")
-            return
-
-        # --- 2. Define core policies and the scopes they grant ---
-        policy_definitions = {
-            "admin": ["list", "show", "create", "edit", "delete", "export"],
-            "standard": ["list", "show", "create", "edit", "export"],
-            "view-only": ["list", "show"],
-        }
-        policy_ids = {}
-
-        logger.info("\n--- Setting up core policies: admin, standard, view-only ---")
-        for policy_name in policy_definitions.keys():
-            role_id = None
-            policy_id = None
-
-            # a) Ensure the client role exists (e.g., 'admin', 'standard')
-            if policy_name in existing_roles:
-                role_id = existing_roles[policy_name]["id"]
-                logger.info(f"  ✔ Client role exists: {policy_name}")
-            else:
-                try:
-                    self.admin.create_client_role(
-                        client_role_id=client_uuid,
-                        payload={"name": policy_name, "description": f"Role for {policy_name} access"},
-                    )
-                    role = self.admin.get_client_role(client_id=client_uuid, role_name=policy_name)
-                    role_id = role["id"]
-                    existing_roles[policy_name] = role
-                    logger.info(f"  ✨ Created client role: {policy_name}")
-                except Exception as e:
-                    logger.error(f"  ❌ Failed to create role {policy_name}: {e}")
-                    continue
-
-            # b) Ensure a role-based policy linked to that role exists
-            full_policy_name = f"Policy - {policy_name}"
-            if full_policy_name in existing_policies:
-                policy_id = existing_policies[full_policy_name]["id"]
-                logger.info(f"  ✔ Role policy exists: {full_policy_name}")
             else:
                 try:
                     roles_config = [{"id": role_id, "required": True}]
@@ -287,38 +168,45 @@ class KeycloakManager:
                         "type": "role",
                         "logic": "POSITIVE",
                         "decisionStrategy": "UNANIMOUS",
-                        "roles": roles_config
+                        "roles": roles_config,
                     }
                     created_policy = self.admin.create_client_authz_role_based_policy(
                         client_id=client_uuid, payload=policy_payload
                     )
-                    policy_id = created_policy["id"]
+                    policy_ids[role_name] = created_policy["id"]
                     existing_policies[full_policy_name] = created_policy
                     logger.info(f"  ✨ Created role policy: {full_policy_name}")
                 except Exception as e:
                     logger.error(f"  ❌ Failed to create policy {full_policy_name}: {e}")
-                    if hasattr(e, 'response_body'):
-                        logger.error(f"     Response: {e.response_body}")
-                    continue
 
-            # Store the successfully created policy ID
-            if role_id and policy_id:
-                policy_ids[policy_name] = policy_id
+        def _policies_for_scope(scope: str):
+            """Return the list of policy IDs required for a given scope (AFFIRMATIVE)."""
+            chain_names = (
+                ["admin", "standard", "view-only"]
+                if scope in view_scopes
+                else ["admin", "standard"]
+                if scope in standard_scopes
+                else ["admin"]  # create/delete fall here
+            )
+            missing = [n for n in chain_names if n not in policy_ids]
+            if missing:
+                logger.warning(
+                    f"    - Skipping scope '{scope}': missing policies {missing}"
+                )
+                return None
+            return [policy_ids[n] for n in chain_names]
 
-        if not policy_ids:
-            logger.error("\n❌ No policies were created successfully. Cannot proceed.")
-            return
+        # --- 3) For each model: ensure UMA resource & one scope-permission per scope
+        all_scopes = admin_scopes[:]  # full set used for UMA resource definition
 
-        # --- 3. Iterate over all Django models to create resources and permissions ---
-        all_scopes = ["list", "show", "create", "edit", "delete", "export"]
         for model in apps.get_models():
             res_name = f"{model._meta.app_label}.{model.__name__}"
             logger.info(f"\n--- Processing Model: {res_name} ---")
 
-            # a) Create or fetch UMA resource for the model
-            resource_id = None
-            if res_name in existing_resources:
-                resource_id = existing_resources[res_name].get("_id")
+            # a) Ensure UMA resource with all scopes
+            resource = existing_resources.get(res_name)
+            if resource:
+                resource_id = resource.get("_id")
                 logger.info(f"  ✔ UMA resource exists: {res_name}")
             else:
                 try:
@@ -335,51 +223,87 @@ class KeycloakManager:
                     continue
 
             if not resource_id:
-                logger.error(f"  ❌ Could not get resource ID for {res_name}. Skipping permissions.")
+                logger.error(
+                    f"  ❌ Could not get resource ID for {res_name}. Skipping permissions."
+                )
                 continue
 
-            # b) Create one SCOPE-BASED permission per scope, per policy
-            for policy_name, scopes_for_policy in policy_definitions.items():
-                if policy_name not in policy_ids:
-                    logger.warning(f"    ⏭ Skipping policy {policy_name} - setup failed earlier.")
+            # b) Create or update **one permission per scope**
+            for scope in all_scopes:
+                chain_ids = _policies_for_scope(scope)
+                if not chain_ids:
                     continue
 
-                policy_id = policy_ids[policy_name]
+                perm_name = f"Permission - {res_name} - {scope}"
+                desired_payload = {
+                    "name": perm_name,
+                    "type": "scope",
+                    "logic": "POSITIVE",
+                    "decisionStrategy": "AFFIRMATIVE",  # << as requested
+                    "resources": [resource_id],  # constrain to this resource
+                    "policies": chain_ids,  # policy chain per scope
+                    "scopes": [scope],  # single scope per permission
+                }
 
-                # Inner loop to create a permission for each individual scope
-                for scope in scopes_for_policy:
-                    perm_name = f"Permission - {res_name} - {policy_name} - {scope}"
-
-                    if perm_name in existing_permissions:
-                        logger.info(f"    ✔ Scope permission exists: {perm_name}")
-                        continue
-
-                    permission_payload = {
-                        "name": perm_name,
-                        "type": "scope",
-                        "logic": "POSITIVE",
-                        "decisionStrategy": "UNANIMOUS",
-                        "resources": [resource_id],  # Link to the resource
-                        "scopes": [scope],  # Link to the SINGLE scope
-                        "policies": [policy_id],  # Link to the policy
-                    }
-
+                existing = existing_permissions.get(perm_name)
+                if existing:
                     try:
-                        # **THE FIX**: The correct method is create_client_authz_scope_permission
-                        self.admin.create_client_authz_scope_permission(
-                            client_id=client_uuid,
-                            payload=permission_payload
+                        # Normalize and check whether update is needed
+                        current_scopes = existing.get("scopes") or []
+                        current_scope_names = [
+                            s.get("name", s) if isinstance(s, dict) else s
+                            for s in current_scopes
+                        ]
+                        current_policies = existing.get("policies") or []
+                        current_policy_ids = [
+                            p.get("id", p) if isinstance(p, dict) else p
+                            for p in current_policies
+                        ]
+                        needs_update = (
+                            set(current_scope_names) != {scope}
+                            or set(current_policy_ids) != set(chain_ids)
+                            or existing.get("decisionStrategy") != "AFFIRMATIVE"
+                            or set(existing.get("resources") or []) != {resource_id}
                         )
-                        existing_permissions[perm_name] = {"name": perm_name}
-                        logger.info(f"    🛡  Created scope permission: {perm_name}")
-                    except KeycloakPostError as e:
-                        logger.error(f"    ❌ Failed to create permission {perm_name}: {e.response_body}")
+                        if needs_update:
+                            payload = dict(existing)
+                            payload.update(desired_payload)
+                            self.admin.update_client_authz_permission(
+                                client_id=client_uuid,
+                                permission_id=existing["id"],
+                                payload=payload,
+                            )
+                            logger.info(f"    🔄 Updated permission: {perm_name}")
+                        else:
+                            logger.info(f"    ✔ Permission up-to-date: {perm_name}")
                     except Exception as e:
-                        logger.error(f"    ❌ An unexpected error occurred creating permission {perm_name}: {e}")
+                        logger.error(
+                            f"    ❌ Failed to update existing permission {perm_name}: {e}"
+                        )
+                    continue
 
-        logger.info("\n---")
-        logger.info("✅ Keycloak authorization setup complete.")
-    def get_uma_permissions(self, access_token: str):
+                # Create new permission
+                try:
+                    created_perm = _create_scope_permission(
+                        client_uuid, desired_payload
+                    )
+                    existing_permissions[perm_name] = created_perm
+                    logger.info(
+                        f"    🛡️  Created scope permission '{perm_name}' "
+                        f"(policies: {', '.join(['admin', 'standard', 'view-only'] if scope in view_scopes else ['admin', 'standard'] if scope in standard_scopes else ['admin'])})"
+                    )
+                except KeycloakPostError as e:
+                    logger.error(
+                        f"    ❌ Failed to create scope permission {perm_name}: {e.response_body}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"    ❌ An unexpected error occurred for permission {perm_name}: {e}"
+                    )
+
+        logger.info("\n✅ Keycloak scope-based setup complete.")
+
+    def get_uma_permissions(self, access_token: str, permissions: list = None):
         """
         Fetches UMA (User-Managed Access) permissions for a given access token.
         This encapsulates the logic from your `helpers.py`.
@@ -395,7 +319,9 @@ class KeycloakManager:
             return None
 
         try:
-            return self.oidc.uma_permissions(token=access_token)
+            return self.oidc.uma_permissions(
+                token=access_token, permissions=permissions
+            )
         except Exception as e:
             logger.error(f"Failed to fetch UMA permissions: {e}")
             return None
@@ -419,7 +345,9 @@ class KeycloakManager:
         try:
             return self.oidc.refresh_token(refresh_token)
         except KeycloakPostError as e:
-            logger.warning(f"Failed to refresh token: {e.response_code} - {e.response_body}")
+            logger.warning(
+                f"Failed to refresh token: {e.response_code} - {e.response_body}"
+            )
             return None
 
     def get_user_permissions(self, access_token: str, model_or_instance):
@@ -442,7 +370,7 @@ class KeycloakManager:
             uma_permissions = self.oidc.uma_permissions(token=access_token)
 
             # Determine the resource name
-            if hasattr(model_or_instance, '_meta'):  # It's an instance or a model class
+            if hasattr(model_or_instance, "_meta"):  # It's an instance or a model class
                 app_label = model_or_instance._meta.app_label
                 model_name = model_or_instance._meta.model_name
                 resource_name = f"{app_label}.{model_name}"
@@ -451,13 +379,13 @@ class KeycloakManager:
 
             allowed_scopes = set()
             for perm in uma_permissions:
-                if perm.get('rsname') == resource_name:
+                if perm.get("rsname") == resource_name:
                     # Check for record-specific permissions if an instance is provided
-                    if hasattr(model_or_instance, 'pk') and model_or_instance.pk:
-                        if perm.get('resource_set_id') == str(model_or_instance.pk):
-                            allowed_scopes.update(perm.get('scopes', []))
+                    if hasattr(model_or_instance, "pk") and model_or_instance.pk:
+                        if perm.get("resource_set_id") == str(model_or_instance.pk):
+                            allowed_scopes.update(perm.get("scopes", []))
                     else:  # General model permissions
-                        allowed_scopes.update(perm.get('scopes', []))
+                        allowed_scopes.update(perm.get("scopes", []))
 
             return allowed_scopes
 
@@ -480,9 +408,17 @@ class KeycloakManager:
         client_uuid = settings.OIDC_RP_CLIENT_UUID or ""
         try:
             existing_resources = {r["name"]: r for r in self.uma.resource_set_list()}
-            existing_roles = {r["name"]: r for r in self.admin.get_client_roles(client_id=client_uuid)}
-            existing_policies = {p["name"]: p for p in self.admin.get_client_authz_policies(client_id=client_uuid)}
-            existing_permissions = {p["name"]: p for p in self.admin.get_client_authz_permissions(client_id=client_uuid)}
+            existing_roles = {
+                r["name"]: r for r in self.admin.get_client_roles(client_id=client_uuid)
+            }
+            existing_policies = {
+                p["name"]: p
+                for p in self.admin.get_client_authz_policies(client_id=client_uuid)
+            }
+            existing_permissions = {
+                p["name"]: p
+                for p in self.admin.get_client_authz_permissions(client_id=client_uuid)
+            }
             logger.info("✔ Configurations loaded.")
         except KeycloakGetError as e:
             logger.error(
@@ -515,7 +451,9 @@ class KeycloakManager:
                 else:
                     # Try to get existing role first
                     try:
-                        role = self.admin.get_client_role(client_id=client_uuid, role_name=policy_name)
+                        role = self.admin.get_client_role(
+                            client_id=client_uuid, role_name=policy_name
+                        )
                         role_id = role["id"]
                         existing_roles[policy_name] = role
                         logger.info(f"  ✔ Client role found: {policy_name}")
@@ -530,9 +468,11 @@ class KeycloakManager:
                         self.admin.create_client_role(
                             client_role_id=client_uuid,
                             payload=role_payload,
-                            skip_exists=True
+                            skip_exists=True,
                         )
-                        role = self.admin.get_client_role(client_id=client_uuid, role_name=policy_name)
+                        role = self.admin.get_client_role(
+                            client_id=client_uuid, role_name=policy_name
+                        )
                         role_id = role["id"]
                         existing_roles[policy_name] = role
                         logger.info(f"  ✨ Created client role: {policy_name}")
@@ -560,18 +500,21 @@ class KeycloakManager:
                             "logic": "POSITIVE",
                             "decisionStrategy": "UNANIMOUS",
                             "config": {
-                                "roles": json.dumps(roles_config, separators=(',', ':'))
-                            }
+                                "roles": json.dumps(roles_config, separators=(",", ":"))
+                            },
                         }
 
-                        created_policy = self.admin.create_client_authz_role_based_policy(
-                            client_id=client_uuid,
-                            payload=policy_payload
+                        created_policy = (
+                            self.admin.create_client_authz_role_based_policy(
+                                client_id=client_uuid, payload=policy_payload
+                            )
                         )
 
                     except Exception as role_policy_error:
                         # Method 2: Fallback to generic policy creation
-                        logger.info(f"    ⚠ Role-based policy creation failed, trying generic method...")
+                        logger.info(
+                            f"    ⚠ Role-based policy creation failed, trying generic method..."
+                        )
 
                         policy_payload = {
                             "name": full_policy_name,
@@ -580,15 +523,16 @@ class KeycloakManager:
                             "decisionStrategy": "UNANIMOUS",
                             "config": {
                                 "roles": f'[{{"id":"{role_id}","required":true}}]'  # String format instead of JSON
-                            }
+                            },
                         }
 
                         # Debug output
-                        logger.info(f"    🔍 Trying with config: {policy_payload['config']}")
+                        logger.info(
+                            f"    🔍 Trying with config: {policy_payload['config']}"
+                        )
 
                         created_policy = self.admin.create_client_authz_policy(
-                            client_id=client_uuid,
-                            payload=policy_payload
+                            client_id=client_uuid, payload=policy_payload
                         )
 
                     # Handle different response formats
@@ -596,15 +540,22 @@ class KeycloakManager:
                         policy_id = created_policy["id"]
                     else:
                         # If response doesn't contain ID, refresh policies and find it
-                        logger.info(f"    🔄 Refreshing policies to find created policy...")
-                        updated_policies = self.admin.get_client_authz_policies(client_id=client_uuid)
+                        logger.info(
+                            f"    🔄 Refreshing policies to find created policy..."
+                        )
+                        updated_policies = self.admin.get_client_authz_policies(
+                            client_id=client_uuid
+                        )
                         for policy in updated_policies:
                             if policy["name"] == full_policy_name:
                                 policy_id = policy["id"]
                                 break
 
                     if policy_id:
-                        existing_policies[full_policy_name] = {"id": policy_id, "name": full_policy_name}
+                        existing_policies[full_policy_name] = {
+                            "id": policy_id,
+                            "name": full_policy_name,
+                        }
                         logger.info(f"  ✨ Created role policy: {full_policy_name}")
                     else:
                         raise Exception("Policy created but ID not found")
@@ -612,13 +563,15 @@ class KeycloakManager:
             except Exception as e:
                 logger.error(f"❌ Failed to create policy {full_policy_name}: {e}")
                 # Add more detailed error information
-                if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                if hasattr(e, "response") and hasattr(e.response, "text"):
                     logger.error(f"    Response: {e.response.text}")
                 continue
             # Only add to policy_ids if both role and policy were created successfully
             if role_id and policy_id:
                 policy_ids[policy_name] = policy_id
-                logger.info(f"  ✅ Policy setup complete for: {policy_name} (ID: {policy_id})")
+                logger.info(
+                    f"  ✅ Policy setup complete for: {policy_name} (ID: {policy_id})"
+                )
             else:
                 logger.error(f"❌ Failed to setup policy: {policy_name}")
 
@@ -641,7 +594,9 @@ class KeycloakManager:
 
             # --- Create or fetch UMA resource-set for the model ---
             if res_name in existing_resources:
-                resource_id = existing_resources[res_name].get("_id") or existing_resources[res_name].get("id")
+                resource_id = existing_resources[res_name].get(
+                    "_id"
+                ) or existing_resources[res_name].get("id")
                 logger.info(f"  ✔ UMA resource exists: {res_name}")
             else:
                 payload = {
@@ -689,23 +644,20 @@ class KeycloakManager:
 
                 try:
                     self.admin.create_client_authz_resource_based_permission(
-                        client_id=client_uuid,
-                        payload=permission_payload
+                        client_id=client_uuid, payload=permission_payload
                     )
                     existing_permissions[perm_name] = {"name": perm_name}
+                    logger.info(f"    🛡 Created resource permission: {perm_name}")
                     logger.info(
-                        f"    🛡 Created resource permission: {perm_name}"
+                        f"        └── Grants scopes: {', '.join(scopes_for_policy)}"
                     )
-                    logger.info(f"        └── Grants scopes: {', '.join(scopes_for_policy)}")
 
                 except KeycloakPostError as e:
                     logger.error(
-                            f"    ❌ Failed to create permission {perm_name}: {e.response.text if hasattr(e, 'response') else e}"
+                        f"    ❌ Failed to create permission {perm_name}: {e.response.text if hasattr(e, 'response') else e}"
                     )
                 except Exception as e:
-                    logger.error(
-                        f"    ❌ Failed to create permission {perm_name}: {e}")
-
+                    logger.error(f"    ❌ Failed to create permission {perm_name}: {e}")
 
         logger.info("\n---")
         logger.info("Keycloak authorization setup complete.")
@@ -722,13 +674,15 @@ class KeycloakManager:
         for policy_name, scopes in policy_definitions.items():
             logger.info(f"  • {policy_name}: {', '.join(scopes)}")
 
-
-
     def get_authz_permissions(self):
-        permissions = self.admin.get_client_authz_permissions(client_id=self.client_uuid)
+        permissions = self.admin.get_client_authz_permissions(
+            client_id=self.client_uuid
+        )
         return permissions
 
-    def get_permissions(self, access_token: str, resource_name: str, resource_id: str = None):
+    def get_permissions(
+        self, access_token: str, resource_name: str, resource_id: str = None
+    ):
         """
         Gets the allowed actions for a user on a specific resource.
 
@@ -745,21 +699,18 @@ class KeycloakManager:
             if self.retry():
                 return set()
         try:
-            uma_permissions  = self.uma.resource_set_list()
+            uma_permissions = self.uma.resource_set_list()
             allowed_scopes = set()
             for perm in uma_permissions:
-                if perm.get('rsname') == resource_name:
-                    if resource_id and perm.get('resource_set_id') == resource_id:
-                        allowed_scopes.update(perm.get('scopes', []))
+                if perm.get("rsname") == resource_name:
+                    if resource_id and perm.get("resource_set_id") == resource_id:
+                        allowed_scopes.update(perm.get("scopes", []))
                     elif not resource_id:
-                        allowed_scopes.update(perm.get('scopes', []))
+                        allowed_scopes.update(perm.get("scopes", []))
             return allowed_scopes
         except Exception as e:
             logger.error(f"Failed to get UMA permissions: {e}")
             return set()
 
-
-
     def teardown_django_model_permissions(self):
         pass
-
