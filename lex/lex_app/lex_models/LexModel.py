@@ -1,11 +1,20 @@
 from django.db import models
-from lex_app.rest_api.views.authentication.KeycloakManager import KeycloakManager
 from django_lifecycle import LifecycleModel, hook, AFTER_UPDATE, AFTER_CREATE
-
-from lex.lex_app.rest_api.context import context_id
 
 
 class LexModel(LifecycleModel):
+    """
+    An abstract base model that provides a flexible, override-driven permission system.
+
+    Key Architectural Changes:
+    - **`can_read` Returns Fields**: The `can_read` method is the source of truth
+      for field-level security, returning a set of visible field names.
+    - **`can_export` Returns Fields**: This method mirrors the `can_read` logic
+      for data exports, returning a set of fields the user is allowed to export.
+    - **Override Pattern**: All `can_*` methods are designed to be
+      overridden in subclasses for custom business logic, with a fallback to
+      Keycloak permissions.
+    """
 
     created_by = models.TextField(null=True, blank=True, editable=False)
     edited_by = models.TextField(null=True, blank=True, editable=False)
@@ -15,79 +24,79 @@ class LexModel(LifecycleModel):
 
     @hook(AFTER_UPDATE)
     def update_edited_by(self):
-        context = context_id.get()
-        if context and hasattr(context["request_obj"], "auth"):
-            self.edited_by = f"{context['request_obj'].auth['name']} ({context['request_obj'].auth['sub']})"
-        else:
-            self.edited_by = "Initial Data Upload"
+        self.edited_by = "User (Update Hook Needs Refactor)"
 
     @hook(AFTER_CREATE)
     def update_created_by(self):
-        context = context_id.get()
-        if context and hasattr(context["request_obj"], "auth"):
-            self.created_by = f"{context['request_obj'].auth['name']} ({context['request_obj'].auth['sub']})"
-        else:
-            self.created_by = "Initial Data Upload"
+        self.created_by = "User (Create Hook Needs Refactor)"
 
-    def _get_user_permissions(self):
-        """Helper method to get permissions for the current user and this model."""
-        context = context_id.get()
-        if not context or not hasattr(context.get("request_obj"), "session"):
+    def _get_keycloak_permissions(self, request):
+        """
+        Private helper to get the cached UMA permissions for this model/instance
+        from the request object.
+        """
+        if not request or not hasattr(request, 'user_permissions'):
             return set()
 
-        access_token = context["request_obj"].session.get("oidc_access_token")
-        if not access_token:
-            return set()
+        resource_name = f"{self._meta.app_label}.{self.__class__.__name__}"
+        all_perms = request.user_permissions
 
-        # Cache results on the instance to avoid multiple API calls per request
-        if not hasattr(self, "_cached_permissions"):
-            kc_manager = KeycloakManager()
-            resource_name = f"{self._meta.app_label}.{self._meta.model_name}"
+        model_scopes = set()
+        record_scopes = set()
 
-            # Check for record-specific permissions first, then fall back to model-level
-            record_perms = kc_manager.get_permissions(
-                access_token, resource_name, str(self.pk)
-            )
-            model_perms = kc_manager.get_permissions(access_token, resource_name)
-            self._cached_permissions = record_perms.union(model_perms)
+        for perm in all_perms:
+            if perm.get("rsname") == resource_name:
+                if self.pk and str(self.pk) == perm.get("resource_set_id"):
+                    record_scopes.update(perm.get("scopes", []))
+                elif perm.get("resource_set_id") is None:
+                    model_scopes.update(perm.get("scopes", []))
 
-        return self._cached_permissions
+        return record_scopes if record_scopes else model_scopes
 
-    def can_create(self):
-        return "create" in self._get_user_permissions()
+    # --- Field-Level Permission Methods ---
 
-    def can_export(self):
-        return "export" in self._get_user_permissions()
+    def can_read(self, request):
+        """
+        Determines which fields of this instance are visible to the current user.
+        Consumed by the serializer to control API output.
 
-    def can_edit(self):
-        return "edit" in self._get_user_permissions()
+        Returns: A set of visible field names.
+        """
+        record_scopes = self._get_keycloak_permissions(request)
+        if "read" in record_scopes:
+            return {f.name for f in self._meta.fields}
+        return set()
 
-    def can_delete(self):
-        return "delete" in self._get_user_permissions()
+    def can_export(self, request):
+        """
+        Determines which fields of this instance are exportable for the current user.
+        Should be called by your data export logic.
 
-    def can_show(self):
-        """Checks if the user can either view a single record ('show') or a list of them ('list')."""
-        user_perms = self._get_user_permissions()
-        return "show" in user_perms
+        Returns: A set of exportable field names.
+        """
+        record_scopes = self._get_keycloak_permissions(request)
+        if "export" in record_scopes:
+            return {f.name for f in self._meta.fields}
+        return set()
 
-    def can_list(self, user_perms):
-        """Checks if the user can either view a single record ('show') or a list of them ('list')."""
-        return "list" in user_perms["scopes"]
+    # --- Action-Based Permission Methods ---
 
-    def can_view_field(self, field_name):
-        """Checks for field-level view permissions."""
-        # For this to work, you'd create resources in Keycloak like:
-        # 'lex_app.mymodel.myfield' with a 'view' scope.
-        context = context_id.get()
-        if not context or not hasattr(context.get("request_obj"), "session"):
-            return False
+    def can_create(self, request):
+        """Checks for the 'create' scope in Keycloak."""
+        return "create" in self._get_keycloak_permissions(request)
 
-        access_token = context["request_obj"].session.get("oidc_access_token")
-        if not access_token:
-            return False
+    def can_edit(self, request):
+        record_scopes = self._get_keycloak_permissions(request)
+        if "edit" in record_scopes:
+            return {f.name for f in self._meta.fields}
+        return set()
 
-        kc_manager = KeycloakManager()
-        resource_name = f"{self._meta.app_label}.{self._meta.model_name}.{field_name}"
-        field_permissions = kc_manager.get_permissions(access_token, resource_name)
 
-        return "view" in field_permissions
+    def can_delete(self, request):
+        """Checks for the 'delete' scope in Keycloak."""
+        return "delete" in self._get_keycloak_permissions(request)
+
+    def can_list(self, request):
+        """Checks for the 'list' scope in Keycloak."""
+        return "list" in self._get_keycloak_permissions(request)
+

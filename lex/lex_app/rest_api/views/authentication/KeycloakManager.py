@@ -72,7 +72,7 @@ class KeycloakManager:
             logger.error(f"Failed to initialize Keycloak OIDC client: {e}")
             self.oidc = None
 
-    def setup_django_model_permissions_resource_based(self):
+    def setup_django_model_permissions_scope_based(self):
         """
         Initializes Keycloak UMA resources using a **scope-based** permission model.
 
@@ -80,7 +80,7 @@ class KeycloakManager:
         - Creates **one permission per scope per resource** (not one-per-policy).
         - Each permission uses decisionStrategy="AFFIRMATIVE".
         - Policy chains by scope:
-            * view-only scopes ("list","show")  -> policies: [admin, standard, view-only]
+            * view-only scopes ("list","read")  -> policies: [admin, standard, view-only]
             * standard-only scopes ("edit","export") -> policies: [admin, standard]
             * admin-only scopes ("create","delete")  -> policies: [admin]
         """
@@ -142,9 +142,9 @@ class KeycloakManager:
             return
 
         # --- 2) Ensure core role policies exist
-        admin_scopes = ["list", "show", "create", "edit", "delete", "export"]
-        standard_scopes = ["list", "show", "edit", "export"]
-        view_scopes = ["list", "show"]
+        admin_scopes = ["list", "read", "create", "edit", "delete", "export"]
+        standard_scopes = ["list", "read", "edit", "export"]
+        view_scopes = ["list", "read"]
 
         policy_ids = {}
         for role_name in ["admin", "standard", "view-only"]:
@@ -430,9 +430,9 @@ class KeycloakManager:
 
         # 4) Define the three policies and which scopes they grant
         policy_definitions = {
-            "admin": ["list", "show", "create", "edit", "delete", "export"],
-            "standard": ["list", "show", "create", "edit", "export"],
-            "view-only": ["list", "show"],
+            "admin": ["list", "read", "create", "edit", "delete", "export"],
+            "standard": ["list", "read", "create", "edit", "export"],
+            "view-only": ["list", "read"],
         }
         policy_ids = {}
 
@@ -585,7 +585,7 @@ class KeycloakManager:
             return
 
         # 5) Iterate over all Django models to create resources and permissions
-        scopes = ["list", "show", "create", "edit", "delete", "export"]
+        scopes = ["list", "read", "create", "edit", "delete", "export"]
 
         for model in apps.get_models():
             res_name = f"{model._meta.app_label}.{model.__name__}"

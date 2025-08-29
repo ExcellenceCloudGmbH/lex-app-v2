@@ -252,6 +252,7 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django_cprofile_middleware.middleware.ProfilerMiddleware",
     "simple_history.middleware.HistoryRequestMiddleware",
+    "lex_app.rest_api.middleware.KeycloakPermissionsMiddleware",
     # 'mozilla_django_oidc.middleware.SessionRefresh',
     # "lex.lex_app.rest_api.views.authentication.RefreshTokenSessionMiddleware.RefreshTokenSessionMiddleware",
     "oauth2_authcodeflow.middleware.LoginRequiredMiddleware",

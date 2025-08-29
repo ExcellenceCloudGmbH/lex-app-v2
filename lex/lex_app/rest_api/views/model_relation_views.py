@@ -19,105 +19,25 @@ class ModelStructureObtainView(APIView):
     get_model_structure_func = None
     get_container_func = None
 
-    def get_access_rights_for_user(self, access_token):
-        """
-        Generates a detailed list of a user's permissions for all models, records, and fields.
-
-        Args:
-            access_token (str): The user's Keycloak access token.
-
-        Returns:
-            list: A list of permission dictionaries formatted for the frontend.
-        """
-        if not access_token:
-            return []
-
-        # kc_manager = KeycloakManager()
-        # uma_permissions = kc_manager.get_uma_permissions(access_token)
-
-        access_rights = []
-
-        # A dictionary to group permissions by resource and record
-        # Format: { 'resource_name': { 'record_id': {'scopes'}, 'model_level': {'scopes'} } }
-        grouped_perms = {}
-
-        for perm in uma_permissions:
-            resource_name = perm.get("rsname")
-            if not resource_name:
-                continue
-
-            record_id = perm.get("resource_set_id")
-            scopes = set(perm.get("scopes", []))
-
-            if resource_name not in grouped_perms:
-                grouped_perms[resource_name] = {}
-
-            if record_id:
-                if record_id not in grouped_perms[resource_name]:
-                    grouped_perms[resource_name][record_id] = set()
-                grouped_perms[resource_name][record_id].update(scopes)
-            else:
-                if "model_level" not in grouped_perms[resource_name]:
-                    grouped_perms[resource_name]["model_level"] = set()
-                grouped_perms[resource_name]["model_level"].update(scopes)
-
-        # Process the grouped permissions into the final access_rights list
-        for resource, records in grouped_perms.items():
-            # Handle record-level permissions
-            for record_id, scopes in records.items():
-                if record_id == "model_level":
-                    continue
-                for action in scopes:
-                    access_rights.append(
-                        {
-                            "action": action,
-                            "resource": resource,
-                            "record": {"id": record_id},
-                        }
-                    )
-
-            # Handle model-level permissions
-            if "model_level" in records:
-                for action in records["model_level"]:
-                    access_rights.append({"action": action, "resource": resource})
-
-        return access_rights
-
     def delete_restricted_nodes_from_model_structure(self, tree, request):
         """
-        Recursively remove nodes the user cannot read based on Keycloak permissions.
+        Recursively remove nodes the user cannot list. This now uses the fast,
+        refactored can_list method on the model instance.
         """
-        user_perms = KeycloakManager().get_uma_permissions(
-            request.session["oidc_access_token"]
-        )
         for key in list(tree.keys()):
             node = tree[key]
-            # If it's a leaf node representing a model, check read permission
-            if "children" not in node:
+            # If it's a leaf node representing a model, check list permission
+            if node.get("type") == "Model":
                 try:
-                    # Get an instance of the model to check permissions against
-                    model_instance = self.get_container_func(key)
+                    model_container = self.get_container_func(key)
+                    # Instantiate the model to call its permission check method
+                    model_instance = model_container.model_class()
 
-                    # Temporarily attach the request to the context for the permission check
-                    # This is necessary for LexModel's permission methods to access the session
-                    from lex.lex_app.rest_api.context import context_id
-
-                    context_id.set({"request_obj": request})
-                    temp = model_instance.model_class()
-                    model_perms = item = next(
-                        (
-                            x
-                            for x in user_perms
-                            if x.get("rsname")
-                            == f"ArmiraCashflowDB.{temp.__class__. __name__}"
-                        ),
-                        None,
-                    )
-                    if not temp.can_list(model_perms):
+                    # Use the new, simple, and efficient permission check
+                    if not model_instance.can_list(request):
                         del tree[key]
-                        del temp
                         continue
-                    del temp
+
                 except Exception:
                     # If we can't get a container or check permissions, remove it for safety
                     del tree[key]
@@ -133,13 +53,10 @@ class ModelStructureObtainView(APIView):
         # 1) Copy the raw tree
         structure = copy.deepcopy(self.get_model_structure_func())
 
-        # kc = KeycloakManager()
-        # temp = kc.get_uma_permissions(request.session['oidc_access_token'])
-        # print(request.session['oidc_access_token'])
-
+        # 2) Prune nodes the user is not authorized to see
         self.delete_restricted_nodes_from_model_structure(structure, request)
 
-        # 3) Annotate with serializers (unchanged)
+        # 3) Annotate with serializers (this logic remains the same)
         def annotate(subtree):
             for node_id, node in subtree.items():
                 try:
@@ -157,7 +74,6 @@ class ModelStructureObtainView(APIView):
         annotate(structure)
 
         return Response(structure)
-
 
 class ModelStylingObtainView(APIView):
     http_method_names = ["get"]
@@ -327,7 +243,7 @@ class ProcessStructure(APIView):
 #                     context_id.set({"request_obj": request})
 #                     temp = model_instance.model_class()
 #
-#                     if not temp.can_show():
+#                     if not temp.can_read():
 #                         del tree[key]
 #                         del temp
 #                         continue

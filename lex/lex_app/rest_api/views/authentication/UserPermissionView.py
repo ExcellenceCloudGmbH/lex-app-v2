@@ -15,7 +15,7 @@ class UserPermissionsView(APIView):
         ra_perms = []
         for p in perms:
             for scope in p.get("scopes", []):
-                action = "read" if scope == "show" else scope
+                action = "read" if scope == "read" else scope
                 ra = {
                     "action": action,
                     "resource": p.get("rsname")
