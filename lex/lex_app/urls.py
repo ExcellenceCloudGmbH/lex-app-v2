@@ -15,7 +15,11 @@ Including another URLconf
 """
 import os
 
-from django.urls import path, include
+from django.urls import path, include, re_path
+from lex.react.views import serve_react
+
+from lex.lex_app import settings
+
 
 from . import views
 from .ProcessAdminSettings import processAdminSite, adminSite
@@ -32,7 +36,7 @@ urlpatterns = [
     path(url_prefix, processAdminSite.urls),
     # path("oidc/", include("mozilla_django_oidc.urls")),
     path("oidc/", include("oauth2_authcodeflow.urls")),
-    # re_path(
-    #     r"^(?P<path>.*)$", serve_react, {"document_root": settings.REACT_APP_BUILD_PATH}
-    # ),
+    re_path(
+        r"^(?P<path>.*)$", serve_react, {"document_root": settings.REACT_APP_BUILD_PATH}
+    ),
 ]

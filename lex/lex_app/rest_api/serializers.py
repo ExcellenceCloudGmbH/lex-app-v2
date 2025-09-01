@@ -1,9 +1,12 @@
 from django.db import models
 from rest_framework import serializers, viewsets
 
+from lex_app.lex_models.LexModel import LexModel
+
 # Field‐names that React-Admin expects
 ID_FIELD_NAME = "id_field"
 SHORT_DESCR_NAME = "short_description"
+
 
 
 # --- NEW FILTERING LIST SERIALIZER ---
@@ -18,19 +21,21 @@ class FilteredListSerializer(serializers.ListSerializer):
         ret = []
         for item in iterable:
             representation = self.child.to_representation(item)
+            # Only include non-empty results in the final list
             if representation:
                 ret.append(representation)
         return ret
 
 
 # --- UPDATED PERMISSION-AWARE BASE SERIALIZER ---
-class PermissionAwareModelSerializer(serializers.ModelSerializer):
+class LexSerializer(serializers.ModelSerializer):
     """
     A custom ModelSerializer that controls field visibility and adds a
     `scopes` field to the output for each record.
     """
     # Define a new field to hold thescopes for each record.
     lex_reserved_scopes = serializers.SerializerMethodField()
+
 
     def get_lex_reserved_scopes(self, instance):
         """
@@ -41,9 +46,12 @@ class PermissionAwareModelSerializer(serializers.ModelSerializer):
         if not request:
             return {}
 
-        edit = instance.can_edit(request)
+        lexmodel_fields =  set(map(lambda x: x.name, LexModel._meta.fields))
+        edit = instance.can_edit(request) - lexmodel_fields - {'id'}
         delete = instance.can_delete(request)
         export = instance.can_export(request)
+        if not edit:
+            edit = []
 
         return {
             "edit": edit,
@@ -53,32 +61,37 @@ class PermissionAwareModelSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         """
-        This method now controls both field visibility and adds the
-        permissions field to the final output.
+        This method completely reshapes the output to combine field values
+        and their associated permissions.
         """
         request = self.context.get('request')
 
         # The can_read method from LexModel returns the set of visible fields.
         visible_fields = instance.can_read(request)
-
-        # If the user cannot see any fields, return an empty dict.
         if not visible_fields:
             return {}
 
-        # Proceed with default serialization.
+        # 2. Get the default flat representation of the instance.
+        # This gives us the raw values for all fields.
         representation = super().to_representation(instance)
 
         # Filter the representation to only include visible fields.
         # The `scopes` field is always included if the record is visible.
         for field_name in list(representation.keys()):
-            if field_name not in visible_fields and field_name != 'lex_reserved_scopes' and field_name not in ['id', 'id_field']:
+            if field_name not in visible_fields and field_name != 'lex_reserved_scopes' and field_name not in ['id', 'id_field', SHORT_DESCR_NAME]:
                 representation.pop(field_name)
 
         return representation
 
 
 # --- UPDATED BASE TEMPLATE ---
-class RestApiModelSerializerTemplate(PermissionAwareModelSerializer):
+class RestApiModelSerializerTemplate(LexSerializer):
+    """
+    The base template for all auto-generated and wrapped serializers.
+    It inherits the new nested permission structure from LexSerializer.
+    """
+    # Note: short_description is now implicitly handled by the parent's
+    # to_representation method and will be nested like all other fields.
     short_description = serializers.SerializerMethodField()
 
     def get_short_description(self, obj):
@@ -147,7 +160,7 @@ def _wrap_custom_serializer(custom_cls, model_class):
         "get_short_description": lambda self, obj: str(obj),
         "Meta": NewMeta,
     }
-    base_classes = (PermissionAwareModelSerializer, custom_cls)
+    base_classes = (LexSerializer, custom_cls)
     return type(f"{custom_cls.__name__}WithInternalFields", base_classes, attrs)
 
 

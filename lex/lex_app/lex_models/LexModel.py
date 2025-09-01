@@ -1,5 +1,8 @@
+from typing import Set
+
 from django.db import models
 from django_lifecycle import LifecycleModel, hook, AFTER_UPDATE, AFTER_CREATE
+from lex.lex_app.rest_api.context import context_id
 
 
 class LexModel(LifecycleModel):
@@ -24,11 +27,19 @@ class LexModel(LifecycleModel):
 
     @hook(AFTER_UPDATE)
     def update_edited_by(self):
-        self.edited_by = "User (Update Hook Needs Refactor)"
+        context = context_id.get()
+        if context and hasattr(context['request_obj'], 'user'):
+            self.edited_by = f"{context['request_obj'].user.first_name} {context['request_obj'].user.last_name} - {context['request_obj'].user.email}"
+        else:
+            self.edited_by = 'Initial Data Upload'
 
     @hook(AFTER_CREATE)
     def update_created_by(self):
-        self.created_by = "User (Create Hook Needs Refactor)"
+        context = context_id.get()
+        if context and hasattr(context['request_obj'], 'user'):
+            self.created_by = f"{context['request_obj'].user.first_name} {context['request_obj'].user.last_name} - {context['request_obj'].user.email}"
+        else:
+            self.created_by = 'Initial Data Upload'
 
     def _get_keycloak_permissions(self, request):
         """
@@ -55,7 +66,7 @@ class LexModel(LifecycleModel):
 
     # --- Field-Level Permission Methods ---
 
-    def can_read(self, request):
+    def can_read(self, request) -> Set[str]:
         """
         Determines which fields of this instance are visible to the current user.
         Consumed by the serializer to control API output.
@@ -67,7 +78,7 @@ class LexModel(LifecycleModel):
             return {f.name for f in self._meta.fields}
         return set()
 
-    def can_export(self, request):
+    def can_export(self, request) -> Set[str]:
         """
         Determines which fields of this instance are exportable for the current user.
         Should be called by your data export logic.
@@ -81,22 +92,22 @@ class LexModel(LifecycleModel):
 
     # --- Action-Based Permission Methods ---
 
-    def can_create(self, request):
+    def can_create(self, request) -> bool:
         """Checks for the 'create' scope in Keycloak."""
         return "create" in self._get_keycloak_permissions(request)
 
-    def can_edit(self, request):
+    def can_edit(self, request) -> Set[str]:
         record_scopes = self._get_keycloak_permissions(request)
         if "edit" in record_scopes:
             return {f.name for f in self._meta.fields}
         return set()
 
 
-    def can_delete(self, request):
+    def can_delete(self, request) -> bool:
         """Checks for the 'delete' scope in Keycloak."""
         return "delete" in self._get_keycloak_permissions(request)
 
-    def can_list(self, request):
+    def can_list(self, request) -> bool:
         """Checks for the 'list' scope in Keycloak."""
         return "list" in self._get_keycloak_permissions(request)
 

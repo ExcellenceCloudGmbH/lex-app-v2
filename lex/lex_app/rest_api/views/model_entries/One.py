@@ -24,6 +24,7 @@ from lex.lex_app.rest_api.views.model_entries.mixins.ModelEntryProviderMixin imp
     ModelEntryProviderMixin,
 )
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
 
 from lex_app.rest_api.views.permissions.UserPermission import UserPermission
 
@@ -39,9 +40,16 @@ class OneModelEntry(
 
     def create(self, request, *args, **kwargs):
         model_container = self.kwargs["model_container"]
-        # instance = model_container.model_class()
-        # if not instance.can_create(request):
-        #     return Response(data={}, status=status.HTTP_403_FORBIDDEN, headers={})
+        instance = model_container.model_class()
+        if not instance.can_create(request):
+            return Response(
+                {
+                    "message": f"You are not authorized to create a record in {model_container.model_class.__name__}"
+                },
+                status=status.HTTP_400_BAD_REQUEST  # use 400/422 instead of 403
+            )
+
+            # return Response(data={}, status=status.HTTP_204_NO_CONTENT, headers={}, exception=e)
 
         calculationId = self.kwargs["calculationId"]
 
@@ -62,10 +70,18 @@ class OneModelEntry(
         model_container = self.kwargs["model_container"]
         calculationId = self.kwargs["calculationId"]
         instance = model_container.model_class()
-        # if not instance.can_edit(request):
-        #     return Response(data={}, status=status.HTTP_403_FORBIDDEN, headers={})
 
-        with OperationContext(request, calculationId) as context_id:
+        
+        
+        # if not instance.can_edit(request):
+        #     return Response(
+        #         {
+        #             "message": f"You are not authorized to edit a record in {model_container.model_class.__name__}"
+        #         },
+        #         status=status.HTTP_400_BAD_REQUEST  # use 400/422 instead of 403
+        #     )
+
+        with OperationContext(request, calculationId):
             instance = model_container.model_class.objects.filter(
                 pk=self.kwargs["pk"]
             ).first()
