@@ -2,6 +2,7 @@ from django.core.management.base import BaseCommand
 from django.apps import apps
 from keycloak import KeycloakOpenIDConnection, KeycloakUMA, KeycloakAdmin
 from keycloak.exceptions import KeycloakDeleteError, KeycloakGetError
+from lex.lex_app import settings
 
 
 class Command(BaseCommand):
@@ -12,10 +13,10 @@ class Command(BaseCommand):
         try:
             self.stdout.write("Connecting to Keycloak...")
             conn = KeycloakOpenIDConnection(
-                server_url="https://exc-testing.com",
-                realm_name="lex",
-                client_id="LEX_LOCAL_ENV",
-                client_secret_key="O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF",
+                server_url=settings.KEYCLOAK_URL,
+                realm_name=settings.KEYCLOAK_REALM,
+                client_id=settings.OIDC_RP_CLIENT_ID,
+                client_secret_key=settings.OIDC_RP_CLIENT_SECRET,
                 verify=False,
             )
             kc_uma = KeycloakUMA(connection=conn)
@@ -26,7 +27,7 @@ class Command(BaseCommand):
             return
 
         # 2) Your client's internal UUID
-        client_uuid = "3e5eeafe-a3b3-469e-9db3-54cff7108d70"
+        client_uuid = settings.OIDC_RP_CLIENT_UUID
 
         self.stdout.write("Starting rollback process...")
 
