@@ -684,7 +684,7 @@ OIDC_RP_CLIENT_ID = os.getenv("OIDC_RP_CLIENT_ID", "LEX_LOCAL_ENV")
 OIDC_RP_CLIENT_SECRET = os.getenv(
     "OIDC_RP_CLIENT_SECRET", "O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF"
 )
-OIDC_RP_CLIENT_UUID = os.getnev(
+OIDC_RP_CLIENT_UUID = os.getenv(
     "OIDC_RP_CLIENT_UUID", "3e5eeafe-a3b3-469e-9db3-54cff7108d70"
 )
 
