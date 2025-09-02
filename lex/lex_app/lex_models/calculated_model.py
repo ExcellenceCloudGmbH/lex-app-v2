@@ -1,4 +1,5 @@
 import itertools
+import logging
 from copy import deepcopy
 
 from celery.result import ResultSet
@@ -7,11 +8,17 @@ from django.db.models.base import ModelBase
 
 from lex_app import settings
 
+logger = logging.getLogger(__name__)
+
 
 def _flatten(list_2d):
     return list(itertools.chain.from_iterable(list_2d))
 
-def calc_and_save(models, *args):
+
+def calc_and_save_sync(models, *args):
+    """
+    Synchronous version of calc_and_save for fallback scenarios.
+    """
     for model in models:
         model.calculate(*args)
         try:
@@ -52,6 +59,24 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
     def calculate(self):
         pass
 
+
+    @classmethod
+    def _handle_celery_task_failure(cls, failed_groups, *args):
+        """
+        Handle failed Celery tasks by processing them synchronously.
+        
+        Args:
+            failed_groups: List of model groups that failed in Celery
+            *args: Arguments to pass to calculate method
+        """
+        logger.warning(f"Processing {len(failed_groups)} failed groups synchronously")
+        for group in failed_groups:
+            try:
+                calc_and_save_sync(group, *args)
+                logger.info(f"Successfully processed failed group of {len(group)} models synchronously")
+            except Exception as sync_error:
+                logger.error(f"Synchronous fallback also failed for group: {sync_error}")
+                raise
 
     @classmethod
     def create(cls, *args, **kwargs):
@@ -116,21 +141,76 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
                     groups.append(v)
             return groups
 
-        if settings.celery_active:
+        if settings.CELERY_ACTIVE:
             groups = add_to_group(cluster_dict, [])
-            rs = ResultSet([])
             try:
-                rs.join()
-                for group in groups:
-                    rs.add(calc_and_save.delay(group))
-                try:
-                    rs.join()
-                except Exception as e:
-                    return
-            except Exception as e:
-                calc_and_save(models, *args)
+                # Import the Celery task here to avoid circular imports
+                from lex_app.celery_tasks import calc_and_save
+                
+                # Dispatch each group as a separate Celery task
+                task_results = []
+                group_mapping = {}  # Map task results to their corresponding groups
+                
+                for i, group in enumerate(groups):
+                    if group:  # Only dispatch non-empty groups
+                        try:
+                            task_result = calc_and_save.delay(group, *args)
+                            task_results.append(task_result)
+                            group_mapping[task_result.id] = group
+                            logger.info(f"Dispatched Celery task {task_result.id} for group {i+1} of {len(group)} models")
+                        except Exception as dispatch_error:
+                            logger.error(f"Failed to dispatch task for group {i+1}: {dispatch_error}")
+                            # Process this group synchronously as fallback
+                            calc_and_save_sync(group, *args)
+                
+                if task_results:
+                    # Create ResultSet from the task results and wait for completion
+                    rs = ResultSet(task_results)
+                    failed_groups = []
+                    
+                    try:
+                        # Wait for all tasks to complete, but handle individual failures
+                        results = rs.join(propagate=False)  # Don't propagate exceptions immediately
+                        
+                        # Check each task result for failures
+                        for task_result in task_results:
+                            try:
+                                if task_result.failed():
+                                    logger.error(f"Task {task_result.id} failed: {task_result.result}")
+                                    # Add the corresponding group to failed_groups for retry
+                                    if task_result.id in group_mapping:
+                                        failed_groups.append(group_mapping[task_result.id])
+                                else:
+                                    logger.debug(f"Task {task_result.id} completed successfully")
+                            except Exception as check_error:
+                                logger.error(f"Error checking task {task_result.id} status: {check_error}")
+                                # Assume failure and add to retry list
+                                if task_result.id in group_mapping:
+                                    failed_groups.append(group_mapping[task_result.id])
+                        
+                        # Process any failed groups synchronously
+                        if failed_groups:
+                            logger.warning(f"Processing {len(failed_groups)} failed task groups synchronously")
+                            cls._handle_celery_task_failure(failed_groups, *args)
+                        
+                        successful_tasks = len(task_results) - len(failed_groups)
+                        logger.info(f"Celery processing completed: {successful_tasks}/{len(task_results)} tasks successful")
+                        
+                    except Exception as celery_error:
+                        logger.error(f"Celery ResultSet processing failed: {celery_error}")
+                        # Fall back to synchronous processing for all groups
+                        logger.warning("Falling back to synchronous processing for all groups")
+                        calc_and_save_sync(models, *args)
+                else:
+                    logger.info("No groups to process, skipping Celery dispatch")
+                    
+            except Exception as celery_setup_error:
+                logger.error(f"Celery setup failed: {celery_setup_error}")
+                logger.warning("Falling back to synchronous processing")
+                calc_and_save_sync(models, *args)
         else:
-            calc_and_save(models, *args)
+            logger.info("Celery not active, using synchronous processing")
+            calc_and_save_sync(models, *args)
 
     def delete_models_with_same_defining_fields(self):
         filter_keys = {}
