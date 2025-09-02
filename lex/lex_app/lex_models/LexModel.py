@@ -14,19 +14,33 @@ class LexModel(LifecycleModel):
 
     @hook(AFTER_UPDATE)
     def update_edited_by(self):
-        context = context_id.get()
-        if context and hasattr(context['request_obj'], 'auth'):
-            self.edited_by = f"{context['request_obj'].auth['name']} ({context['request_obj'].auth['sub']})"
-        else:
-            self.edited_by = 'Initial Data Upload'
+        try:
+            context = context_id.get()
+            if context and 'request_obj' in context and hasattr(context['request_obj'], 'auth'):
+                self.edited_by = f"{context['request_obj'].auth['name']} ({context['request_obj'].auth['sub']})"
+            elif context and context.get('celery_task'):
+                # Running in Celery task
+                self.edited_by = 'Celery Background Task'
+            else:
+                self.edited_by = 'Initial Data Upload'
+        except Exception:
+            # Fallback if context access fails
+            self.edited_by = 'System Process'
 
     @hook(AFTER_CREATE)
     def update_created_by(self):
-        context = context_id.get()
-        if context and hasattr(context['request_obj'], 'auth'):
-            self.created_by = f"{context['request_obj'].auth['name']} ({context['request_obj'].auth['sub']})"
-        else:
-            self.created_by = 'Initial Data Upload'
+        try:
+            context = context_id.get()
+            if context and 'request_obj' in context and hasattr(context['request_obj'], 'auth'):
+                self.created_by = f"{context['request_obj'].auth['name']} ({context['request_obj'].auth['sub']})"
+            elif context and context.get('celery_task'):
+                # Running in Celery task
+                self.created_by = 'Celery Background Task'
+            else:
+                self.created_by = 'Initial Data Upload'
+        except Exception:
+            # Fallback if context access fails
+            self.created_by = 'System Process'
 
 
     def track(self):

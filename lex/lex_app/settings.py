@@ -377,9 +377,9 @@ CELERY_BROKER_URL = (
 
 # Celery Result Backend Configuration - Redis (changed from PostgreSQL)
 CELERY_RESULT_BACKEND = (
-    f"redis://{os.getenv('REDIS_USERNAME')}:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}/0"
+    f"db+postgresql://{db_username}:{os.getenv('POSTGRES_PASSWORD', 'envvar_not_existing')}@{os.getenv('DATABASE_DOMAIN', 'envvar_not_existing')}/{os.getenv('DATABASE_NAME', 'envvar_not_existing')}"
     if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
-    else "redis://127.0.0.1:6379/0"
+    else f"db+postgresql://django:lundadminlocal@localhost/db_{repo_name}"
 )
 
 # Celery Configuration

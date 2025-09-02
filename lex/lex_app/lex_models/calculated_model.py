@@ -7,6 +7,7 @@ from django.db.models import Model, UniqueConstraint
 from django.db.models.base import ModelBase
 
 from lex_app import settings
+from lex.lex_app.rest_api.context import context_id
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,15 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
                 # Import the Celery task here to avoid circular imports
                 from lex_app.celery_tasks import calc_and_save
                 
+                # Extract calculation_id from context if available
+                calculation_id = None
+                try:
+                    context = context_id.get()
+                    if context and "calculation_id" in context:
+                        calculation_id = context["calculation_id"]
+                except Exception as e:
+                    logger.warning(f"Could not get calculation_id from context: {e}")
+                
                 # Dispatch each group as a separate Celery task
                 task_results = []
                 group_mapping = {}  # Map task results to their corresponding groups
@@ -154,10 +164,10 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
                 for i, group in enumerate(groups):
                     if group:  # Only dispatch non-empty groups
                         try:
-                            task_result = calc_and_save.delay(group, *args)
+                            task_result = calc_and_save.delay(group, *args, calculation_id=calculation_id)
                             task_results.append(task_result)
                             group_mapping[task_result.id] = group
-                            logger.info(f"Dispatched Celery task {task_result.id} for group {i+1} of {len(group)} models")
+                            logger.info(f"Dispatched Celery task {task_result.id} for group {i+1} of {len(group)} models with calculation_id: {calculation_id}")
                         except Exception as dispatch_error:
                             logger.error(f"Failed to dispatch task for group {i+1}: {dispatch_error}")
                             # Process this group synchronously as fallback

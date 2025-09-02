@@ -16,8 +16,52 @@ from django.db.models import Model
 from lex.lex_app import settings
 from lex.lex_app.lex_models.CalculationModel import CalculationModel
 from lex.lex_app.rest_api.signals import update_calculation_status
+from lex.lex_app.rest_api.context import context_id
+
 
 logger = logging.getLogger(__name__)
+
+
+class CeleryCalculationContext:
+    """
+    Context manager to set calculation_id for Celery tasks.
+    
+    This allows CalculationLog.log() to access the calculation_id
+    even when running in a Celery worker process.
+    """
+    
+    def __init__(self, calculation_id):
+        self.calculation_id = calculation_id
+        self.original_context = None
+    
+    def __enter__(self):
+        if self.calculation_id:
+            # Store original context if it exists
+            try:
+                self.original_context = context_id.get()
+            except Exception:
+                self.original_context = None
+            
+            # Set new context with calculation_id and celery marker
+            new_context = {
+                "calculation_id": self.calculation_id,
+                "celery_task": True,  # Marker to indicate this is running in Celery
+                "task_name": "calc_and_save"  # Optional: task identification
+            }
+            context_id.set(new_context)
+        
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.calculation_id:
+            # Restore original context
+            if self.original_context:
+                context_id.set(self.original_context)
+            else:
+                try:
+                    context_id.set({})
+                except Exception:
+                    pass
 
 
 class CallbackTask(Task):
@@ -199,7 +243,7 @@ def custom_shared_task(func):
 
 
 @custom_shared_task
-def calc_and_save(self, models: List[Model], *args) -> List[Model]:
+def calc_and_save(self, models: List[Model], *args, calculation_id=None) -> List[Model]:
     """
     Execute calculations for a group of models with proper error handling.
     
@@ -211,6 +255,7 @@ def calc_and_save(self, models: List[Model], *args) -> List[Model]:
         self: Task instance (bound by decorator)
         models: List of model instances to calculate and save
         *args: Additional arguments passed to the calculate method
+        calculation_id: Optional calculation ID for logging context
         
     Returns:
         List of successfully processed models
@@ -221,54 +266,56 @@ def calc_and_save(self, models: List[Model], *args) -> List[Model]:
     processed_models = []
     
     try:
-        logger.info(f"Starting calculation for {len(models)} models")
+        logger.info(f"Starting calculation for {len(models)} models with calculation_id: {calculation_id}")
         
-        for i, model in enumerate(models):
-            try:
-                # Execute model calculation
-                model.update(*args)
-                
-                # Attempt to save the model
+        # Set up calculation context for logging
+        with CeleryCalculationContext(calculation_id):
+            for i, model in enumerate(models):
                 try:
-                    model.save()
-                    processed_models.append(model)
-                    logger.debug(f"Successfully processed model {i+1}/{len(models)}: {model}")
+                    # Execute model calculation with calculation_id context available
+                    model.update(*args)
                     
-                except IntegrityError as integrity_error:
-                    # Handle unique constraint violations using existing method
-                    logger.warning(
-                        f"Integrity error for model {model}, attempting conflict resolution: {integrity_error}"
-                    )
-                    
-                    if hasattr(model, 'delete_models_with_same_defining_fields'):
-                        old_model = model.delete_models_with_same_defining_fields()
-                        model.pk = old_model.pk
+                    # Attempt to save the model
+                    try:
                         model.save()
                         processed_models.append(model)
-                        logger.info(f"Resolved conflict for model {model}")
-                    else:
-                        logger.error(f"Model {model} does not support conflict resolution")
-                        raise
-                        
-            except Exception as model_error:
-                # Log individual model calculation errors
-                logger.error(
-                    f"Calculation failed for model {i+1}/{len(models)} ({model}): {model_error}",
-                    exc_info=True
-                )
-                
-                # Update model status to ERROR if it's a CalculationModel
-                if isinstance(model, CalculationModel):
-                    model.is_calculated = CalculationModel.ERROR
-                    if hasattr(model, 'error_message'):
-                        model.error_message = str(model_error)
-                    try:
-                        model.save(skip_hooks=True)
-                    except Exception as save_error:
-                        logger.error(f"Failed to save error status for {model}: {save_error}")
-                
-                # Re-raise to trigger task failure
-                raise model_error
+                        logger.debug(f"Successfully processed model {i+1}/{len(models)}: {model}")
+
+                    except IntegrityError as integrity_error:
+                        # Handle unique constraint violations using existing method
+                        logger.warning(
+                            f"Integrity error for model {model}, attempting conflict resolution: {integrity_error}"
+                        )
+
+                        if hasattr(model, 'delete_models_with_same_defining_fields'):
+                            old_model = model.delete_models_with_same_defining_fields()
+                            model.pk = old_model.pk
+                            model.save()
+                            processed_models.append(model)
+                            logger.info(f"Resolved conflict for model {model}")
+                        else:
+                            logger.error(f"Model {model} does not support conflict resolution")
+                            raise
+                            
+                except Exception as model_error:
+                    # Log individual model calculation errors
+                    logger.error(
+                        f"Calculation failed for model {i+1}/{len(models)} ({model}): {model_error}",
+                        exc_info=True
+                    )
+                    
+                    # Update model status to ERROR if it's a CalculationModel
+                    if isinstance(model, CalculationModel):
+                        model.is_calculated = CalculationModel.ERROR
+                        if hasattr(model, 'error_message'):
+                            model.error_message = str(model_error)
+                        try:
+                            model.save(skip_hooks=True)
+                        except Exception as save_error:
+                            logger.error(f"Failed to save error status for {model}: {save_error}")
+                    
+                    # Re-raise to trigger task failure
+                    raise model_error
                 
         logger.info(f"Successfully completed calculation for {len(processed_models)} models")
         return processed_models

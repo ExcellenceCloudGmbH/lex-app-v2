@@ -13,6 +13,7 @@ from django_lifecycle.conditions import WhenFieldValueIs
 from lex.lex_app.lex_models.LexModel import LexModel
 from django.core.cache import caches
 from lex.lex_app.rest_api.context import context_id
+from lex.lex_app.rest_api.context import OperationContext
 
 
 class CalculationModel(LexModel):
@@ -37,6 +38,10 @@ class CalculationModel(LexModel):
     class Meta:
         abstract = True
 
+    # def __init__(self, *args, **kwargs):
+    #     super().__init__(*args, **kwargs)
+    #     self.context = None
+    #
     @abstractmethod
     def update(self):
         pass
@@ -60,7 +65,7 @@ class CalculationModel(LexModel):
         """
         from lex.lex_app import settings
         
-        # Check if Celery is enabled in settings
+        # Check if Celery is enabled in setting
         if not getattr(settings, 'CELERY_ACTIVE', False):
             return False
             
@@ -83,9 +88,17 @@ class CalculationModel(LexModel):
         """
         from lex.lex_app.celery_tasks import calc_and_save
         
-        # Dispatch single model calculation to Celery
-        # The calc_and_save task expects a list of models
-        return calc_and_save.delay([self])
+        # Extract only the calculation_id from context to avoid pickling issues
+        calculation_id = None
+        try:
+            context = context_id.get()
+            if context and "calculation_id" in context:
+                calculation_id = context["calculation_id"]
+        except Exception as e:
+            logger.warning(f"Could not get calculation_id from context: {e}")
+        
+        # Dispatch single model calculation to Celery with calculation_id
+        return calc_and_save.delay([self], calculation_id=calculation_id)
 
     def execute_calculation_sync(self):
         """
@@ -106,10 +119,18 @@ class CalculationModel(LexModel):
             self.is_calculated = self.ERROR
             raise e
         finally:
-            redis_cache = caches["redis"]
-            calc_id = context_id.get()["calculation_id"]
-            cache_key = f"calculation_log_{calc_id}"
-            redis_cache.delete(cache_key)
+            # Clean up cache if context is available
+            try:
+                redis_cache = caches["redis"]
+                context = context_id.get()
+                if context and "calculation_id" in context:
+                    calc_id = context["calculation_id"]
+                    cache_key = f"calculation_log_{calc_id}"
+                    redis_cache.delete(cache_key)
+            except Exception as cache_error:
+                # Log cache cleanup error but don't fail the calculation
+                logger.warning(f"Failed to clean up cache: {cache_error}")
+            
             self.save(skip_hooks=True)
             update_calculation_status(self)
 
@@ -132,6 +153,7 @@ class CalculationModel(LexModel):
             if self.should_use_celery():
                 # Dispatch to Celery worker
                 logger.info(f"Dispatching calculation for {self} to Celery worker")
+                # self.context = context_id.get()
                 task_result = self.dispatch_calculation_task()
                 
                 # Store task ID if the model has a task_id field

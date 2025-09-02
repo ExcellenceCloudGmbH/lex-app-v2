@@ -10,7 +10,7 @@ from celery import shared_task
 from django.apps import apps
 
 from lex_app.model_utils.LexAuthentication import LexAuthentication
-from lex_app.settings import repo_name
+from lex_app.settings import repo_name, CELERY_ACTIVE
 from lex_app.utils import GenericAppConfig
 
 
@@ -71,7 +71,7 @@ class LexAppConfig(GenericAppConfig):
         test = ProcessAdminTestCase()
 
         if (not running_in_uvicorn()
-                or os.getenv("CELERY_ACTIVE")
+                or CELERY_ACTIVE
                 or not _authentication_settings
                 or not hasattr(_authentication_settings, 'initial_data_load')
                 or not _authentication_settings.initial_data_load):

@@ -18,6 +18,12 @@ class OperationContext:
                             'calculation_id': self.calculation_id})
         return context_id.get()
 
+    def get_request(self):
+        return context_id.get()['request_obj']
+
+    def get_calc_id(self):
+        return context_id.get()['calculation_id']
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         # Optionally, reset or clear the operation id here if necessary
         pass

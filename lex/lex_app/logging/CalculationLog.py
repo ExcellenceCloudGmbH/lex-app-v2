@@ -75,6 +75,7 @@ class CalculationLog(models.Model):
         #     return
         # 2) Resolve calculation_id & AuditLog
         calc_id = context_id.get()["calculation_id"]
+        print("Cacluation ID:", calc_id)
         redis_cache = caches["redis"]
         audit_log = AuditLog.objects.get(calculation_id=calc_id)
         channel_layer = get_channel_layer()
