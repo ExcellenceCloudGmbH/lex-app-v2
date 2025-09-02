@@ -7,7 +7,6 @@ from rest_framework.views import APIView
 from rest_framework_api_key.permissions import HasAPIKey
 
 from lex.lex_app.rest_api.model_collection.model_collection import ModelCollection
-from lex_app.rest_api.views.authentication.KeycloakManager import KeycloakManager
 
 
 class ModelStructureObtainView(APIView):
@@ -34,11 +33,14 @@ class ModelStructureObtainView(APIView):
                     model_instance = model_container.model_class()
 
                     # Use the new, simple, and efficient permission check
-                    if not model_instance.can_list(request):
+                    if hasattr(
+                        model_instance, "can_list"
+                    ) and not model_instance.can_list(request):
                         del tree[key]
                         continue
 
-                except Exception:
+                except Exception as e:
+                    raise e
                     # If we can't get a container or check permissions, remove it for safety
                     del tree[key]
                     continue
@@ -74,6 +76,7 @@ class ModelStructureObtainView(APIView):
         annotate(structure)
 
         return Response(structure)
+
 
 class ModelStylingObtainView(APIView):
     http_method_names = ["get"]
