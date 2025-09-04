@@ -5,7 +5,6 @@ from lex.lex_app.rest_api.context import context_id
 
 
 class LexModel(LifecycleModel):
-    
     created_by = models.TextField(null=True, blank=True, editable=False)
     edited_by = models.TextField(null=True, blank=True, editable=False)
 

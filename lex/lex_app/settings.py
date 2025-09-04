@@ -211,7 +211,7 @@ INSTALLED_APPS = [
     "channels",
     "lex.lex_app.apps.LexAppConfig",
     # "lex_ai",
-    "simple_history",
+    # "simple_history",
     # "django_rq",
     "celery",
     "react",
@@ -247,7 +247,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django_cprofile_middleware.middleware.ProfilerMiddleware",
-    "simple_history.middleware.HistoryRequestMiddleware",
+    # "simple_history.middleware.HistoryRequestMiddleware",
 ]
 
 DJANGO_CPROFILE_MIDDLEWARE_REQUIRE_STAFF = False
@@ -321,9 +321,9 @@ DATABASES = {
         "PASSWORD": "lundadminlocal",
         "HOST": "localhost",
         "PORT": "5432",
-        "TEST": {
-            "NAME": f"db_{repo_name}_test",
-        },
+        # "TEST": {
+        #     "NAME": f"db_{repo_name}_test",
+        # },
     },
     "GCP": {
         "ENGINE": "django.db.backends.postgresql_psycopg2",
