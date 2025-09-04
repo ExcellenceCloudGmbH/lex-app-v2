@@ -10,6 +10,11 @@ from keycloak import (
 )
 from keycloak.exceptions import KeycloakPostError, KeycloakGetError
 from lex.lex_app.decorators.LexSingleton import LexSingleton
+import json
+import requests
+from typing import Union, Dict, Any
+from pathlib import Path
+import logging
 
 # It's good practice to have a dedicated logger
 logger = logging.getLogger(__name__)
@@ -60,6 +65,8 @@ class KeycloakManager:
             # )
             self.conn = KeycloakOpenIDConnection(
                 server_url=settings.KEYCLOAK_URL,
+                # username=settings.KEYCLOAK_USERNAME,
+                # password=settings.KEYCLOAK_PASSWORD,
                 client_id=settings.OIDC_RP_CLIENT_ID,
                 realm_name=self.realm_name,
                 client_secret_key=settings.OIDC_RP_CLIENT_SECRET,
@@ -71,6 +78,201 @@ class KeycloakManager:
         except Exception as e:
             logger.error(f"Failed to initialize Keycloak OIDC client: {e}")
             self.oidc = None
+
+
+    def import_authorization_settings(self, payload: Union[Dict[str, Any], str, Path], client_uuid: str = None) -> bool:
+        """
+        Import authorization settings into a Keycloak client's authorization server.
+
+        This method uses the POST /admin/realms/{realm}/clients/{client-uuid}/authz/resource-server/import endpoint
+        to import authorization configuration (resources, scopes, policies, permissions) from JSON data.
+
+        Args:
+            payload (Union[Dict[str, Any], str, Path]): The authorization configuration data.
+                Can be:
+                - Dict: Python dictionary containing the authorization configuration
+                - str: JSON string containing the authorization configuration
+                - Path: Path to a JSON file containing the authorization configuration
+            client_uuid (str, optional): The client UUID. If not provided, uses self.client_uuid
+
+        Returns:
+            bool: True if import was successful, False otherwise
+
+        Raises:
+            ValueError: If payload is invalid or client_uuid is not available
+            requests.RequestException: If the HTTP request fails
+            json.JSONDecodeError: If JSON parsing fails
+
+        Example:
+            # Import from dictionary
+            config = {
+                "policies": [...],
+                "resources": [...],
+                "scopes": [...],
+                "permissions": [...]
+            }
+            success = keycloak_manager.import_authorization_settings(config)
+
+            # Import from file
+            success = keycloak_manager.import_authorization_settings(Path("authz_config.json"))
+
+            # Import from JSON string
+            json_str = '{"policies": [], "resources": []}'
+            success = keycloak_manager.import_authorization_settings(json_str)
+        """
+        try:
+            # Validate that we have admin client and realm
+            if not self.admin:
+                logger.error("Keycloak admin client not initialized")
+                return False
+
+            if not self.realm_name:
+                logger.error("Realm name not configured")
+                return False
+
+            # Determine client UUID to use
+            target_client_uuid = client_uuid or self.client_uuid
+            if not target_client_uuid:
+                logger.error("Client UUID not provided and not configured")
+                return False
+
+            # Parse the payload into a dictionary
+            if isinstance(payload, dict):
+                # Already a dictionary
+                auth_config = payload
+            elif isinstance(payload, (str, Path)):
+                if isinstance(payload, Path):
+                    # Read from file
+                    if not payload.exists():
+                        logger.error(f"File not found: {payload}")
+                        return False
+                    with open(payload, 'r', encoding='utf-8') as f:
+                        auth_config = json.load(f)
+                else:
+                    # Parse JSON string
+                    auth_config = json.loads(payload)
+            else:
+                raise ValueError("Payload must be a dictionary, JSON string, or Path object")
+
+            # Validate that we have a valid configuration structure
+            if not isinstance(auth_config, dict):
+                raise ValueError("Authorization configuration must be a dictionary")
+
+            # Get the admin access token
+            admin_token = self.admin.connection.token['access_token']
+
+            # Prepare the request
+            import_url = f"{self.admin.connection.server_url}/admin/realms/{self.realm_name}/clients/{target_client_uuid}/authz/resource-server/import"
+
+            headers = {
+                'Authorization': f'Bearer {admin_token}',
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+
+            # Make the import request
+            logger.info(f"Importing authorization configuration for client {target_client_uuid}")
+            response = requests.post(
+                import_url,
+                json=auth_config,
+                headers=headers,
+                # verify=getattr(self.admin.connection, 'verify', True),
+                timeout=30
+            )
+
+            # Check response status
+            if response.status_code == 204:
+                logger.info("Authorization configuration imported successfully")
+                return True
+            else:
+                logger.error(
+                    f"Failed to import authorization configuration. Status: {response.status_code}, Response: {response.text}")
+                return False
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in payload: {e}")
+            return False
+        except requests.RequestException as e:
+            logger.error(f"HTTP request failed: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error during authorization import: {e}")
+            return False
+
+    def export_authorization_settings(self, client_uuid: str = None) -> Union[Dict[str, Any], None]:
+        """
+        Export current authorization settings from a Keycloak client's authorization server.
+
+        This method uses the GET /admin/realms/{realm}/clients/{client-uuid}/authz/resource-server endpoint
+        to export the current authorization configuration.
+
+        Args:
+            client_uuid (str, optional): The client UUID. If not provided, uses self.client_uuid
+
+        Returns:
+            Dict[str, Any]: The authorization configuration if successful, None otherwise
+
+        Raises:
+            ValueError: If client_uuid is not available
+            requests.RequestException: If the HTTP request fails
+
+        Example:
+            # Export current configuration
+            config = keycloak_manager.export_authorization_settings()
+            if config:
+                print(json.dumps(config, indent=2))
+        """
+        try:
+            # Validate that we have admin client and realm
+            if not self.admin:
+                logger.error("Keycloak admin client not initialized")
+                return None
+
+            if not self.realm_name:
+                logger.error("Realm name not configured")
+                return None
+
+            # Determine client UUID to use
+            target_client_uuid = client_uuid or self.client_uuid
+            if not target_client_uuid:
+                logger.error("Client UUID not provided and not configured")
+                return None
+
+            # Get the admin access token
+            admin_token = self.admin.connection.token['access_token']
+
+            # Prepare the request
+            export_url = f"{self.admin.connection.server_url}/admin/realms/{self.realm_name}/clients/{target_client_uuid}/authz/resource-server"
+
+            headers = {
+                'Authorization': f'Bearer {admin_token}',
+                'Accept': 'application/json'
+            }
+
+            # Make the export request
+            logger.info(f"Exporting authorization configuration for client {target_client_uuid}")
+            response = requests.get(
+                export_url,
+                headers=headers,
+                # verify=getattr(self.admin.connection, 'verify', True),
+                timeout=30
+            )
+
+            # Check response status
+            if response.status_code == 200:
+                logger.info("Authorization configuration exported successfully")
+                return response.json()
+            else:
+                logger.error(
+                    f"Failed to export authorization configuration. Status: {response.status_code}, Response: {response.text}")
+                return None
+
+        except requests.RequestException as e:
+            logger.error(f"HTTP request failed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error during authorization export: {e}")
+            return None
 
     def setup_django_model_permissions_scope_based(self):
         """
