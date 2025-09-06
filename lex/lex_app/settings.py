@@ -310,6 +310,11 @@ CACHES = {
             "IGNORE_EXCEPTIONS": True,
         },
     },
+    "local": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "unique-snowflake",
+    }
+
 }
 
 
@@ -630,7 +635,7 @@ LOGGING = {
     },
     "loggers": {
         "lex.calclog": {
-            "handlers": ["ws"],
+            "handlers": ["ws", "console"],
             "level": "DEBUG",
             "propagate": False,
         },
