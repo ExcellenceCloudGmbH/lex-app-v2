@@ -6,14 +6,16 @@ from django.db import models
 from lex.lex_app.lex_models.ModificationRestrictedModelExample import (
     AdminReportsModificationRestriction,
 )
-from lex.lex_app.rest_api.context import context_id
-from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.fields import GenericForeignKey
-from lex.lex_app.logging.AuditLog import AuditLog
-from lex.lex_app.logging.model_context import _model_stack
-from django.core.cache import caches
-from channels.layers import get_channel_layer
-from asgiref.sync import async_to_sync
+from django.contrib.contenttypes.models import ContentType
+from lex.lex_app.logging.context_resolver import ContextResolver
+from lex.lex_app.logging.cache_manager import CacheManager
+from lex.lex_app.logging.websocket_notifier import WebSocketNotifier
+from lex.lex_app.logging.data_models import (
+    CalculationLogError,
+    ContextResolutionError,
+    CacheOperationError
+)
 
 #### Note: Messages shall be delivered in the following format: "Severity: Message" The colon and the whitespace after are required for the code to work correctly ####
 # Severity could be something like 'Error', 'Warning', 'Caution', etc. (See Static variables below!)
@@ -63,91 +65,82 @@ class CalculationLog(models.Model):
     @classmethod
     def log(cls, message: str):
         """
-        Logs `message` against the current model context:
-        - current_model  = stack[-1]
-        - parent_model   = stack[-2] (if present)
+        Logs `message` against the current model context.
+        
+        This method has been refactored to use helper classes for better organization
+        and error handling while maintaining full backward compatibility.
+        
+        Args:
+            message: The log message to record
         """
-        # 1) Grab the model stack
-        stack = _model_stack.get()
-        # if not stack:
-        #     logging.getLogger("lex.calclog") \
-        #         .warning("No model context for log: %s", message)
-        #     return
-        # 2) Resolve calculation_id & AuditLog
-        calc_id = context_id.get()["calculation_id"]
-        redis_cache = caches["redis"]
-        audit_log = AuditLog.objects.get(calculation_id=calc_id)
-        channel_layer = get_channel_layer()
-
-        if len(stack) > 0:
-            current_model = stack[-1]
-            current_model_pk = current_model.pk
-            # 3) Prepare CT and record string for current
-            ctype_cur = ContentType.objects.get_for_model(current_model)
-            current_record = f"{current_model._meta.model_name}_{current_model.pk}"
-
-            calc_id_message = {
-                "type": "calculation_id",
-                "payload": {
-                    "calculation_record": current_record,
-                    "calculation_id": calc_id,
-                },
-            }
-            async_to_sync(channel_layer.group_send)("calculations", calc_id_message)
-        else:
-            current_model = None
-            current_model_pk = None
-            ctype_cur = None
-            current_record = None
-
-        if len(stack) > 1:
-            parent_model = stack[-2]
-            if parent_model:
-                ctype_par = ContentType.objects.get_for_model(parent_model)
-                parent_record = f"{parent_model._meta.model_name}_{parent_model.pk}"
-
-                parent_log, _ = cls.objects.get_or_create(
-                    calculationId=calc_id,
-                    auditlog=audit_log,
-                    content_type=ctype_par,
-                    object_id=parent_model.pk,
-                )
-
-                calc_id_message = {
-                    "type": "calculation_id",
-                    "payload": {
-                        "calculation_record": parent_record,
-                        "calculation_id": calc_id,
-                    },
-                }
-                async_to_sync(channel_layer.group_send)("calculations", calc_id_message)
-        else:
+        logger = logging.getLogger("lex.calclog")
+        
+        try:
+            # 1) Resolve context using ContextResolver
+            context_info = ContextResolver.resolve()
+            
+            # 2) Create parent log entry if needed
             parent_log = None
+            if context_info.parent_model and context_info.parent_content_type:
+                parent_log, _ = cls.objects.get_or_create(
+                    calculationId=context_info.calculation_id,
+                    auditlog=context_info.audit_log,
+                    content_type=context_info.parent_content_type,
+                    object_id=context_info.parent_model.pk,
+                )
+            
+            # 3) Create or get current log entry
+            current_model_pk = context_info.current_model.pk if context_info.current_model else None
+            
+            log_entry, _ = cls.objects.get_or_create(
+                calculationId=context_info.calculation_id,
+                auditlog=context_info.audit_log,
+                content_type=context_info.content_type,
+                object_id=current_model_pk,
+                calculationlog=parent_log,
+            )
+            
+            # 4) Append message and save
+            log_entry.calculation_log = (log_entry.calculation_log or "") + f"\n{message}"
+            log_entry.save()
 
-        # 4) If we have a parent, ensure its log exists first
 
-        log_entry, _ = cls.objects.get_or_create(
-            calculationId=calc_id,
-            auditlog=audit_log,
-            content_type=ctype_cur,
-            object_id=current_model_pk,
-            calculationlog=parent_log,
-        )
-
-        # 5) Append & save
-        log_entry.calculation_log = (log_entry.calculation_log or "") + f"\n{message}"
-        log_entry.save()
-
-        redis_cache.set(
-            f"{current_record}_{calc_id}",
-            redis_cache.get(f"{current_record}_{calc_id}", "") + "\n" + message,
-            timeout=60 * 60 * 24 * 7,  # Cache for one week
-        )
-        # 6) Also emit to your WebSocket/logger
-        logging.getLogger("lex.calclog").debug(
-            message,
-            extra={
-                "calculation_record": current_record,
-                "calculationId": calc_id,
-            },
-        )
+            logger.warning(f"The context_info from CalculationLog, context: {context_info}")
+            # 6) Store in cache using CacheManager
+            if context_info.current_record:
+                cache_key = CacheManager.build_cache_key(
+                    context_info.current_record,
+                    context_info.calculation_id
+                )
+                CacheManager.store_message(cache_key, message)
+            
+            # 7) Log to standard logger
+            logger.debug(
+                message,
+                extra={
+                    "calculation_record": context_info.current_record,
+                    "calculationId": context_info.calculation_id,
+                },
+            )
+            
+        except ContextResolutionError as e:
+            # Handle context resolution errors gracefully
+            logger.error(
+                f"Context resolution failed for log message: {message}. Error: {str(e)}",
+                extra={
+                    "calculation_id": getattr(e, 'calculation_id', None),
+                    "stack_length": getattr(e, 'stack_length', None),
+                },
+                exc_info=True
+            )
+            # Continue with minimal logging to ensure message is not lost
+            logger.warning(f"Fallback logging: {message}")
+            
+        except Exception as e:
+            # Handle any other unexpected errors
+            logger.error(
+                f"Unexpected error in CalculationLog.log() for message: {message}. Error: {str(e)}",
+                exc_info=True
+            )
+            # Ensure the message is still logged somewhere
+            logger.warning(f"Fallback logging: {message}")

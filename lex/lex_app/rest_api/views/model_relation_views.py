@@ -57,7 +57,7 @@ class ModelStructureObtainView(APIView):
 
                 node['tracked'] = node_id.lower() not in ModelStructure.UNTRACKED_MODELS
                 print(ModelStructure.UNTRACKED_MODELS)
-                if container and hasattr(container, "serializers_map"):
+                if container and hasattr(container, "serializers_map") and container.serializers_map:
                     node["available_serializers"] = list(
                         container.serializers_map.keys()
                     )

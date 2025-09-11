@@ -70,30 +70,30 @@ GRAPH_MODELS = {
 
 ASGI_APPLICATION = "lex_app.asgi.application"
 
-if os.getenv("DEPLOYMENT_ENVIRONMENT") is None:
-    CHANNEL_LAYERS = {
-        "default": {
-            "BACKEND": "channels.layers.InMemoryChannelLayer",
+# if os.getenv("DEPLOYMENT_ENVIRONMENT") is None:
+#     CHANNEL_LAYERS = {
+#         "default": {
+#             "BACKEND": "channels.layers.InMemoryChannelLayer",
+#         },
+#     }
+# else:
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.pubsub.RedisPubSubChannelLayer",
+        "CONFIG": {
+            "hosts": [
+                (
+                    f"redis://{os.getenv('REDIS_USERNAME')}:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}/2"
+                    if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
+                    else "redis://127.0.0.1:6379/2"
+                )
+            ],
+            "capacity": 100000,
+            "expiry": 10,
+            "prefix": f"{os.getenv('INSTANCE_RESOURCE_IDENTIFIER', 'local')}:",
         },
-    }
-else:
-    CHANNEL_LAYERS = {
-        "default": {
-            "BACKEND": "channels_redis.pubsub.RedisPubSubChannelLayer",
-            "CONFIG": {
-                "hosts": [
-                    (
-                        f"redis://{os.getenv('REDIS_USERNAME')}:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}/2"
-                        if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
-                        else "redis://127.0.0.1:6379/2"
-                    )
-                ],
-                "capacity": 100000,
-                "expiry": 10,
-                "prefix": f"{os.getenv('INSTANCE_RESOURCE_IDENTIFIER', 'local')}:",
-            },
-        },
-    }
+    },
+}
 
 STORAGES = {
     "default": {
@@ -210,8 +210,8 @@ LOGGING = {
 INSTALLED_APPS = [
     "channels",
     "lex.lex_app.apps.LexAppConfig",
-    "lex_ai",
-    "simple_history",
+    # "lex_ai",
+    # "simple_history",
     # "django_rq",
     "celery",
     "react",
@@ -247,7 +247,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django_cprofile_middleware.middleware.ProfilerMiddleware",
-    "simple_history.middleware.HistoryRequestMiddleware",
+    # "simple_history.middleware.HistoryRequestMiddleware",
 ]
 
 DJANGO_CPROFILE_MIDDLEWARE_REQUIRE_STAFF = False
@@ -299,13 +299,22 @@ CACHES = {
     },
     "redis": {
         "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://127.0.0.1:6379/1",  # adjust host/port/db as needed
+        "LOCATION": (
+            f"redis://{os.getenv('REDIS_USERNAME')}:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}/2"
+            if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
+            else "redis://127.0.0.1:6379/2"
+        ),
         "OPTIONS": {
             "CLIENT_CLASS": "django_redis.client.DefaultClient",
             # Optional: silently ignore redis down-time
             "IGNORE_EXCEPTIONS": True,
         },
     },
+    "local": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "unique-snowflake",
+    }
+
 }
 
 
@@ -317,9 +326,9 @@ DATABASES = {
         "PASSWORD": "lundadminlocal",
         "HOST": "localhost",
         "PORT": "5432",
-        "TEST": {
-            "NAME": f"db_{repo_name}_test",
-        },
+        # "TEST": {
+        #     "NAME": f"db_{repo_name}_test",
+        # },
     },
     "GCP": {
         "ENGINE": "django.db.backends.postgresql_psycopg2",
@@ -364,16 +373,21 @@ MIGRATION_MODULES = {}
 
 
 # CELERY STUFF
+# Celery Broker Configuration - Redis
 CELERY_BROKER_URL = (
     f"redis://{os.getenv('REDIS_USERNAME')}:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}/1"
     if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
     else "redis://127.0.0.1:6379/1"
 )
+
+# Celery Result Backend Configuration - Redis (changed from PostgreSQL)
 CELERY_RESULT_BACKEND = (
     f"db+postgresql://{db_username}:{os.getenv('POSTGRES_PASSWORD', 'envvar_not_existing')}@{os.getenv('DATABASE_DOMAIN', 'envvar_not_existing')}/{os.getenv('DATABASE_NAME', 'envvar_not_existing')}"
     if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
     else f"db+postgresql://django:lundadminlocal@localhost/db_{repo_name}"
 )
+
+# Celery Configuration
 CELERY_CACHE_BACKEND = "default"
 CELERY_ACCEPT_CONTENT = ["application/json", "pickle"]
 CELERY_TASK_SERIALIZER = "pickle"
@@ -382,6 +396,8 @@ CELERY_CREATE_MISSING_QUEUES = True
 CELERY_TASK_TRACK_STARTED = True
 CELERY_RESULT_PERSISTENT = True
 CELERY_TASK_DEFAULT_QUEUE = os.getenv("INSTANCE_RESOURCE_IDENTIFIER", "celery")
+
+# Redis-specific Celery configuration
 CELERY_BROKER_TRANSPORT_OPTIONS = {
     "global_keyprefix": f"{os.getenv('INSTANCE_RESOURCE_IDENTIFIER', 'celery')}:",
     "visibility_timeout": float("inf"),
@@ -390,17 +406,37 @@ CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
     "global_keyprefix": f"{os.getenv('INSTANCE_RESOURCE_IDENTIFIER', 'celery')}:",
     "visibility_timeout": float("inf"),
 }
+
+# Task execution configuration
 CELERY_TASK_ACKS_LATE = True
+CELERY_TASK_REJECT_ON_WORKER_LOST = True
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 
+# Result expiration (Redis cleanup)
+CELERY_RESULT_EXPIRES = 3600  # 1 hour
 
+# Enhanced Celery Active Configuration
+# Support both CELERY_ACTIVE and legacy C_FORCE_ROOT for backward compatibility
+CELERY_ACTIVE = os.getenv("CELERY_ACTIVE", "False").lower() == "true"
+CELERY_TASK_TIMEOUT = int(os.getenv("CELERY_TASK_TIMEOUT", "3600"))  # 1 hour
+CELERY_MAX_RETRIES = int(os.getenv("CELERY_MAX_RETRIES", "3"))
+CELERY_RETRY_DELAY = int(os.getenv("CELERY_RETRY_DELAY", "60"))  # seconds
+
+# Legacy support for C_FORCE_ROOT (backward compatibility)
 try:
     c_force_root = os.getenv("C_FORCE_ROOT")
-    if os.getenv("C_FORCE_ROOT") == "True":
-        celery_active = True
-    else:
-        celery_active = False
+    if c_force_root == "True":
+        CELERY_ACTIVE = True
+    # If CELERY_ACTIVE is already True from environment, keep it True
+    # Only set to False if both C_FORCE_ROOT and CELERY_ACTIVE are not set to True
+    elif not CELERY_ACTIVE:
+        CELERY_ACTIVE = False
 except Exception as e:
-    celery_active = False
+    # If there's any error, fall back to the CELERY_ACTIVE environment variable value
+    pass
+
+# Make celery_active available as a module-level variable for backward compatibility
+celery_active = CELERY_ACTIVE
 
 # Password validation
 # https://docs.djangoproject.com/en/3.0/ref/settings/#auth-password-validators
@@ -599,7 +635,7 @@ LOGGING = {
     },
     "loggers": {
         "lex.calclog": {
-            "handlers": ["ws"],
+            "handlers": ["ws", "console"],
             "level": "DEBUG",
             "propagate": False,
         },

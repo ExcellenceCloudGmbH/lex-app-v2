@@ -1,4 +1,5 @@
 import traceback
+import logging
 
 from django.db import transaction
 from lex.lex_app.logging.model_context import model_logging_context
@@ -19,6 +20,10 @@ from lex.lex_app.rest_api.views.model_entries.mixins.DestroyOneWithPayloadMixin 
 from lex.lex_app.rest_api.views.model_entries.mixins.ModelEntryProviderMixin import (
     ModelEntryProviderMixin,
 )
+from lex.lex_app.logging.cache_manager import CacheManager
+from lex_app.logging.websocket_notifier import WebSocketNotifier
+
+logger = logging.getLogger(__name__)
 
 
 class OneModelEntry(
@@ -38,6 +43,7 @@ class OneModelEntry(
             try:
                 with transaction.atomic():
                     response = CreateModelMixin.create(self, request, *args, **kwargs)
+                
             except Exception as e:
                 raise APIException(
                     {"error": f"{e} ", "traceback": traceback.format_exc()}
@@ -60,6 +66,17 @@ class OneModelEntry(
                     instance.untrack()
                     instance.is_calculated = CalculationModel.IN_PROGRESS
                     instance.save(skip_hooks=True)
+                    calculation_id = calculationId
+                    calculation_record = f"{instance._meta.model_name}_{instance.pk}"
+                    WebSocketNotifier.send_calculation_update(
+                        calculation_id=calculationId,
+                        calculation_record=f"{instance._meta.model_name}_{instance.pk}"
+                    )
+                    cache_key = CacheManager.build_cache_key(
+                        calculation_record,
+                        calculation_id
+                    )
+                    CacheManager.store_message(cache_key, "")
                     instance.track()
                     update_calculation_status(instance)
 
@@ -69,13 +86,10 @@ class OneModelEntry(
                 try:
                     response = UpdateModelMixin.update(self, request, *args, **kwargs)
 
-                except Exception as e:
 
+                except Exception as e:
                     raise APIException(
                         {"error": f"{e} ", "traceback": traceback.format_exc()}
                     )
-
-                # TODO: For sharepoint preview, find a new way to create an audit log with the new structure
-                # if "edited_file" in request.data:
 
                 return response
