@@ -10,7 +10,41 @@ class CalculatedModelError(Exception):
     This is the parent class for all calculated model related errors,
     providing a common base for error handling and categorization.
     """
-    pass
+    def __init__(self, message: str, model_class: str = None, **kwargs):
+        self.model_class = model_class
+        self.context = kwargs
+
+        # Build detailed error message with context
+
+        detailed_message = message
+        if model_class:
+            detailed_message = f"[{model_class}] {detailed_message}"
+        if kwargs:
+            context_str = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
+            detailed_message = f"{detailed_message} - Context: {context_str}"
+
+
+        super().__init__(detailed_message)
+
+
+
+
+class ModelCreationError(CalculatedModelError):
+
+    def __init__(self, message: str, model_class: str = None, **kwargs):
+        self.model_class = model_class
+        self.context = kwargs
+
+        # Build detailed error message with context
+        detailed_message = message
+        if model_class:
+            detailed_message = f"[{model_class}] {detailed_message}"
+        if kwargs:
+            context_str = ", ".join([f"{k}={v}" for k, v in kwargs.items()])
+            detailed_message = f"{detailed_message} - Context: {context_str}"
+
+        super().__init__(detailed_message)
+
 
 
 class ModelCombinationError(CalculatedModelError):

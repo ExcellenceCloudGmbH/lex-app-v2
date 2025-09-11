@@ -125,14 +125,18 @@ Version History:
 
 import itertools
 import logging
+
+import os
 from copy import deepcopy
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 
+from django.db import transaction
 from django.db.models import Model, UniqueConstraint
 from django.db.models.base import ModelBase
 
 from lex_app import settings
-from lex.lex_app.rest_api.context import context_id
+from lex.lex_app.rest_api.context import operation_context
+from lex_app.lex_models.LexErrors import *
 
 if TYPE_CHECKING:
     pass  # CalculatedModelMixin is defined in this file
@@ -557,7 +561,7 @@ class ModelClusterManager:
                 parallelizable_fields=parallelizable_fields,
                 model_count=len(models)
             ) from e
-    
+
     @staticmethod
     def flatten_clusters_to_groups(cluster_dict: Dict[Any, Any]) -> List[List['CalculatedModelMixin']]:
         """
@@ -845,7 +849,7 @@ def calc_and_save_sync(models, *args):
             
             # Calculate the model
             try:
-                model.calculate()
+                model.calculate(*args)
                 logger.debug(f"Calculation completed for model {i + 1}")
             except Exception as calc_error:
                 raise CalculatedModelError(
@@ -1186,7 +1190,10 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
             MyCalculatedModel.create()
         """
         creation_start_time = logger.info(f"Starting model creation for {cls.__name__}")
-        
+
+
+
+
         try:
             # Log initial configuration
             logger.info(
@@ -1246,7 +1253,8 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
                     prepared_models_count=len(prepared_models) if 'prepared_models' in locals() else 0,
                     parallelizable_fields=cls.parallelizable_fields
                 ) from clustering_error
-            
+
+            context = operation_context.get()
             # Step 4: Dispatch for processing (Celery or synchronous)
             logger.debug(f"Step 4: Dispatching model processing for {cls.__name__}")
             try:
@@ -1536,22 +1544,26 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
         
         try:
             # Determine processing mode based on Celery configuration
-            celery_active = getattr(settings, 'CELERY_ACTIVE', False)
+            celery_active = os.getenv('CELERY_ACTIVE', None) == 'true' and hasattr(cls.calculate, 'delay')
             
             if celery_active:
                 logger.info(f"Celery is active, dispatching {cls.__name__} models to parallel processing")
-                
+
                 try:
                     processing_groups = ModelClusterManager.flatten_clusters_to_groups(processing_clusters)
-                    
+
                     if processing_groups:
                         total_models = sum(len(group) for group in processing_groups)
                         logger.info(
                             f"Dispatching {len(processing_groups)} groups containing {total_models} "
                             f"models of type {cls.__name__} to Celery"
                         )
-                        
-                        CeleryTaskDispatcher.dispatch_calculation_groups(processing_groups, *args)
+
+                        from lex_app.lex_models.CeleryTaskDispatcher import CeleryTaskDispatcher
+                        # transaction.on_commit(
+                        context = operation_context.get()
+                        CeleryTaskDispatcher.dispatch_calculation_groups(processing_groups, *args, context=context)
+                        # )
                         logger.info(f"Celery dispatch completed for {cls.__name__}")
                         
                     else:
@@ -1658,33 +1670,36 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
             try:
                 filtered_objects = type(self).objects.filter(**filter_keys)
                 object_count = filtered_objects.count()
-                
+
                 logger.debug(f"Found {object_count} existing models with same defining field values")
-                
+
                 if object_count == 1:
+                    logger.error(
+                        f"HASKJHKSDJFH"
+                    )
                     # Exactly one existing model found
                     existing_model = filtered_objects.first()
-                    logger.debug(
+                    logger.error(
                         f"Found existing model with ID {existing_model.pk} for defining fields: {defining_field_values}"
                     )
                     return existing_model
-                    
+
                 elif object_count == 0:
                     # No existing models found, use current model
                     logger.debug(f"No existing models found, using current model for defining fields: {defining_field_values}")
                     return self
-                    
+
                 else:
                     # Multiple models found - this is an error condition
                     existing_ids = list(filtered_objects.values_list('pk', flat=True))
-                    
+
                     # Build detailed error message with defining field context
                     field_details = []
                     for field_name, field_value in defining_field_values.items():
                         field_details.append(f"{field_name}={field_value}")
-                    
+
                     defining_fields_str = ", ".join(field_details)
-                    
+
                     raise CalculatedModelError(
                         f"Found {object_count} models of type {self.__class__.__name__} with identical defining field values. "
                         f"Defining fields: [{defining_fields_str}]. "

@@ -35,7 +35,7 @@ class CacheManager:
     """
     
     CACHE_TIMEOUT = 60 * 60 * 24 * 7  # Cache for one week
-    CALC_CACHE_NAME = "default"
+    CALC_CACHE_NAME = "redis"
 
     @staticmethod
     def store_message(cache_key: str, message: str) -> bool:

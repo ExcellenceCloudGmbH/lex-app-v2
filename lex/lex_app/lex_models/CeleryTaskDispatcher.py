@@ -1,4 +1,13 @@
+from copy import deepcopy
 from typing import List, Optional, Any, Dict
+import logging
+
+from lex_app.lex_models.LexErrors import CeleryDispatchError
+from lex_app.lex_models.calculated_model import calc_and_save_sync
+from lex_app.rest_api.context import operation_context, OperationContext
+from lex.lex_app.logging.model_context import model_logging_context, _model_context
+
+logger = logging.getLogger(__name__)
 
 
 class CeleryTaskDispatcher:
@@ -15,7 +24,7 @@ class CeleryTaskDispatcher:
     def dispatch_calculation_groups(
             groups: List[List['CalculatedModelMixin']],
             *args,
-            calculation_id: Optional[str] = None
+            context = None
     ) -> None:
         """
         Dispatch model groups to Celery workers with failure handling.
@@ -72,11 +81,6 @@ class CeleryTaskDispatcher:
                     total_models=total_models
                 ) from import_error
 
-            # Resolve calculation_id from context if not provided
-            if calculation_id is None:
-                calculation_id = CeleryTaskDispatcher._get_calculation_context()
-                logger.debug(f"Resolved calculation_id from context: {calculation_id}")
-
             # Dispatch each group as a separate Celery task
             task_results = []
             group_mapping = {}  # Map task results to their corresponding groups
@@ -84,9 +88,11 @@ class CeleryTaskDispatcher:
 
             for i, group in enumerate(non_empty_groups):
                 try:
+
                     task_result = CeleryTaskDispatcher._dispatch_single_group(
-                        group, i, *args, calculation_id=calculation_id
+                        group, i, *args, context=context
                     )
+
                     if task_result:
                         task_results.append(task_result)
                         group_mapping[task_result.id] = group
@@ -146,13 +152,14 @@ class CeleryTaskDispatcher:
                     sync_error=str(sync_fallback_error)
                 ) from sync_fallback_error
 
+
     @staticmethod
     def _dispatch_single_group(
             group: List['CalculatedModelMixin'],
             group_index: int,
             *args,
-            calculation_id: Optional[str] = None
-    ) -> Optional[Any]:
+            context=None
+    ):
         """
         Dispatch a single group to Celery with error handling.
 
@@ -186,40 +193,23 @@ class CeleryTaskDispatcher:
         logger.debug(f"Attempting to dispatch group {group_index + 1} with {group_size} models")
 
         try:
-            # Import here to avoid circular imports
-            try:
-                from lex_app.celery_tasks import calc_and_save
-            except ImportError as import_error:
-                raise CeleryDispatchError(
-                    f"Failed to import calc_and_save for group dispatch: {str(import_error)}",
-                    group_index=group_index,
-                    group_size=group_size
-                ) from import_error
+            from lex_app.celery_tasks import calc_and_save
+        except ImportError as import_error:
+            raise CeleryDispatchError(
+                f"Failed to import calc_and_save for group dispatch: {str(import_error)}",
+                group_index=group_index,
+                group_size=group_size
+            ) from import_error
 
-            try:
-                task_result = calc_and_save.delay(group, *args, calculation_id=calculation_id)
 
-                if not task_result:
-                    raise CeleryDispatchError(
-                        "calc_and_save.delay returned None/empty result",
-                        group_index=group_index,
-                        group_size=group_size,
-                        calculation_id=calculation_id
-                    )
-
-                logger.info(
-                    f"Successfully dispatched Celery task {task_result.id} for group {group_index + 1} "
-                    f"containing {group_size} models (calculation_id: {calculation_id})"
-                )
-                return task_result
-
-            except Exception as celery_error:
-                raise CeleryDispatchError(
-                    f"Celery task creation failed: {str(celery_error)}",
-                    group_index=group_index,
-                    group_size=group_size,
-                    calculation_id=calculation_id
-                ) from celery_error
+        try:
+            from lex.lex_app.celery_tasks import register_task_with_context  # Import from wherever you put this function
+            request_obj = context['request_obj'] or {}
+            request_obj_extracted = OperationContext.extract_info_request(request_obj)
+            new_context = {**context, "request_obj": request_obj_extracted}
+            model_context = deepcopy(_model_context.get()['model_context'])
+            task_result = calc_and_save.delay(group, group_index, *args, context=new_context, model_context=model_context)
+            register_task_with_context(task_result)
 
         except CeleryDispatchError as dispatch_error:
             logger.error(f"Celery dispatch failed for group {group_index + 1}: {str(dispatch_error)}")
@@ -245,7 +235,6 @@ class CeleryTaskDispatcher:
                     f"Celery error: {str(dispatch_error)}. Sync error: {str(sync_error)}",
                     group_index=group_index,
                     group_size=group_size,
-                    calculation_id=calculation_id,
                     celery_error=str(dispatch_error),
                     sync_error=str(sync_error)
                 ) from sync_error
@@ -255,8 +244,12 @@ class CeleryTaskDispatcher:
                 f"Unexpected error during group dispatch: {str(unexpected_error)}",
                 group_index=group_index,
                 group_size=group_size,
-                calculation_id=calculation_id
             ) from unexpected_error
+
+        return task_result
+
+
+
 
     @staticmethod
     def _handle_task_results(
@@ -322,17 +315,11 @@ class CeleryTaskDispatcher:
                 logger.debug(f"Waiting for {total_tasks} Celery tasks to complete...")
 
                 # Wait for all tasks to complete, but handle individual failures
-                try:
-                    results = rs.join(propagate=False)  # Don't propagate exceptions immediately
-                    logger.debug("All tasks completed, checking individual results")
-                except Exception as join_error:
-                    logger.error(f"Error waiting for task completion: {str(join_error)}")
-                    # Continue to check individual task status even if join failed
 
+                rs.join(propagate=False)
                 # Check each task result for failures
                 for task_index, task_result in enumerate(task_results):
                     task_id = getattr(task_result, 'id', f'unknown_{task_index}')
-
                     try:
                         if task_result.failed():
                             error_info = getattr(task_result, 'result', 'Unknown error')
@@ -364,6 +351,7 @@ class CeleryTaskDispatcher:
                                 f"Added task {task_id} with status check error to retry queue "
                                 f"({len(failed_group)} models)"
                             )
+
 
                 # Process any failed groups synchronously
                 if failed_groups:
@@ -468,7 +456,7 @@ class CeleryTaskDispatcher:
         """
         calculation_id = None
         try:
-            context = context_id.get()
+            context = operation_context.get()
             if context and "calculation_id" in context:
                 calculation_id = context["calculation_id"]
                 logger.debug(f"Retrieved calculation_id from context: {calculation_id}")

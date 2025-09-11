@@ -103,20 +103,9 @@ class CalculationLog(models.Model):
             # 4) Append message and save
             log_entry.calculation_log = (log_entry.calculation_log or "") + f"\n{message}"
             log_entry.save()
-            
-            # 5) Send WebSocket notifications
-            if context_info.current_record:
-                WebSocketNotifier.send_calculation_update(
-                    context_info.current_record,
-                    context_info.calculation_id
-                )
-            
-            if context_info.parent_record:
-                WebSocketNotifier.send_calculation_update(
-                    context_info.parent_record,
-                    context_info.calculation_id
-                )
-            
+
+
+            logger.warning(f"The context_info from CalculationLog, context: {context_info}")
             # 6) Store in cache using CacheManager
             if context_info.current_record:
                 cache_key = CacheManager.build_cache_key(

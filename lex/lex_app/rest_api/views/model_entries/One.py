@@ -21,6 +21,7 @@ from lex.lex_app.rest_api.views.model_entries.mixins.ModelEntryProviderMixin imp
     ModelEntryProviderMixin,
 )
 from lex.lex_app.logging.cache_manager import CacheManager
+from lex_app.logging.websocket_notifier import WebSocketNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,17 @@ class OneModelEntry(
                     instance.untrack()
                     instance.is_calculated = CalculationModel.IN_PROGRESS
                     instance.save(skip_hooks=True)
+                    calculation_id = calculationId
+                    calculation_record = f"{instance._meta.model_name}_{instance.pk}"
+                    WebSocketNotifier.send_calculation_update(
+                        calculation_id=calculationId,
+                        calculation_record=f"{instance._meta.model_name}_{instance.pk}"
+                    )
+                    cache_key = CacheManager.build_cache_key(
+                        calculation_record,
+                        calculation_id
+                    )
+                    CacheManager.store_message(cache_key, "")
                     instance.track()
                     update_calculation_status(instance)
 

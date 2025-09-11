@@ -1,5 +1,7 @@
+import os
 from abc import abstractmethod
 import logging
+from copy import deepcopy
 
 from django.db import models
 from django.db import transaction
@@ -11,10 +13,9 @@ from django_lifecycle import (
 )
 from django_lifecycle.conditions import WhenFieldValueIs
 from lex.lex_app.lex_models.LexModel import LexModel
-from django.core.cache import caches
-from lex.lex_app.rest_api.context import operation_context
+from lex.lex_app.rest_api.context import operation_context, OperationContext
 from lex.lex_app.logging.cache_manager import CacheManager
-from lex.lex_app.logging.model_context import model_logging_context
+from lex.lex_app.logging.model_context import _model_context
 from lex_app.logging.context_resolver import ContextResolver
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,7 @@ class CalculationModel(LexModel):
         from lex.lex_app import settings
 
         # Check if Celery is enabled in setting
-        if not getattr(settings, 'CELERY_ACTIVE', False):
+        if not os.getenv("CELERY_ACTIVE", None) == 'true' or not hasattr(self.update, 'delay'):
             return False
 
         # Check if Celery is available by trying to import and test connection
@@ -86,19 +87,22 @@ class CalculationModel(LexModel):
         Returns:
             AsyncResult: Celery task result object
         """
-        from lex.lex_app.celery_tasks import calc_and_save
 
         # Extract only the calculation_id from context to avoid pickling issues
-        calculation_id = None
-        try:
-            context = context_id.get()
-            if context and "calculation_id" in context:
-                calculation_id = context["calculation_id"]
-        except Exception as e:
-            logger.warning(f"Could not get calculation_id from context: {e}")
-
+        context = operation_context.get()
+        request_obj = context['request_obj'] or {}
+        request_obj_extracted = OperationContext.extract_info_request(request_obj)
+        new_context = {**context, "request_obj": request_obj_extracted}
         # Dispatch single model calculation to Celery with calculation_id
-        return calc_and_save.delay([self], calculation_id=calculation_id)
+        update_method = self.update
+        model_context = deepcopy(_model_context.get()['model_context'])
+
+        # Dispatch the task
+        task_result = update_method.delay(context=new_context, model_context=model_context)
+
+        # Register with RunInCelery context if one exists
+        from lex.lex_app.celery_tasks import register_task_with_context  # Import from wherever you put this function
+        return register_task_with_context(task_result)
 
     def execute_calculation_sync(self):
         """
@@ -159,9 +163,9 @@ class CalculationModel(LexModel):
                 task_result = self.dispatch_calculation_task()
 
                 # Store task ID if the model has a task_id field
-                if hasattr(self, 'task_id'):
-                    self.task_id = task_result.id
-                    self.save(skip_hooks=True)
+                # if hasattr(self, 'task_id'):
+                #     self.task_id = task_result.id
+                #     self.save(skip_hooks=True)
 
                 # Note: Status will be updated by CallbackTask.on_success/on_failure
                 # Model remains in IN_PROGRESS state until task completes

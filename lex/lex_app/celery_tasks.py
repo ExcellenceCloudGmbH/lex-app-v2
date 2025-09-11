@@ -6,20 +6,35 @@ management, status tracking, and error handling for calculation models.
 """
 
 import logging
+from copy import deepcopy
 from functools import wraps
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, Tuple
+from uuid import uuid4
 
 from celery import Task, shared_task
-from django.db import IntegrityError, transaction
+from celery.result import allow_join_result
+
+from lex.lex_app.logging.model_context import _model_context, model_logging_context
+from celery.signals import task_postrun
+from django.db import transaction
 from django.db.models import Model
 
-from lex.lex_app import settings
 from lex.lex_app.lex_models.CalculationModel import CalculationModel
 from lex.lex_app.rest_api.signals import update_calculation_status
-from lex.lex_app.rest_api.context import context_id
+from lex.lex_app.rest_api.context import operation_context, OperationContext
+from celery.app.control import Control
+import threading
+from contextlib import contextmanager
+from typing import List, Optional, Set, Callable, Any
+
 
 
 logger = logging.getLogger(__name__)
+
+@task_postrun.connect
+def task_done(sender=None, task_id=None, task=None, args=None, kwargs=None, **kw):
+    control = Control(app=task.app)
+    control.shutdown()
 
 
 class CeleryCalculationContext:
@@ -30,38 +45,32 @@ class CeleryCalculationContext:
     even when running in a Celery worker process.
     """
     
-    def __init__(self, calculation_id):
-        self.calculation_id = calculation_id
-        self.original_context = None
+    def __init__(self, context, model_context):
+        self.context = context
+        self.model_context = model_context
     
     def __enter__(self):
-        if self.calculation_id:
-            # Store original context if it exists
-            try:
-                self.original_context = context_id.get()
-            except Exception:
-                self.original_context = None
-            
-            # Set new context with calculation_id and celery marker
-            new_context = {
-                "calculation_id": self.calculation_id,
-                "celery_task": True,  # Marker to indicate this is running in Celery
-                "task_name": "calc_and_save"  # Optional: task identification
-            }
-            context_id.set(new_context)
-        
+        if self.context :
+            logger.warning(f"Operation Context {self.context}")
+
+            new_context = deepcopy(self.context)
+            new_context['calculation_id'] = self.context.get('calculation_id', None)
+            new_context['operation_id'] = str(uuid4())
+            new_context["celery_task"] =  True
+            new_context["task_name"] =  "calc_and_save"
+
+            operation_context.set(new_context)
+        if self.model_context:
+            _model_context.get()['model_context'] = self.model_context
+            logger.warning(f"Operation Context {self.model_context}")
+            logger.warning(f"Saved context {_model_context.get()['model_context']}")
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.calculation_id:
-            # Restore original context
-            if self.original_context:
-                context_id.set(self.original_context)
-            else:
-                try:
-                    context_id.set({})
-                except Exception:
-                    pass
+        pass
+
+
+
 
 
 class CallbackTask(Task):
@@ -92,7 +101,7 @@ class CallbackTask(Task):
                 
             # Extract model instances from task arguments
             model_instances = self._extract_model_instances(args)
-            
+
             for model_instance in model_instances:
                 if isinstance(model_instance, CalculationModel):
                     self._update_model_status(
@@ -100,7 +109,7 @@ class CallbackTask(Task):
                         CalculationModel.SUCCESS, 
                         task_id=task_id
                     )
-                    
+
         except Exception as callback_error:
             logger.error(
                 f"Success callback failed for task {task_id}: {callback_error}",
@@ -194,10 +203,11 @@ class CallbackTask(Task):
                 # Store task ID if provided and field exists
                 if task_id and hasattr(model_instance, 'task_id'):
                     model_instance.task_id = task_id
-                
+
                 # Save without triggering hooks to prevent recursion
                 model_instance.save(skip_hooks=True)
-                
+
+                logger.warning(f"Updating status for {model_instance.__class__.__name__} task {task_id}")
                 # Notify connected systems via WebSocket
                 update_calculation_status(model_instance)
                 
@@ -208,132 +218,290 @@ class CallbackTask(Task):
             )
 
 
-def custom_shared_task(func):
+class RunInCelery:
     """
-    Enhanced shared task decorator with proper callback integration.
-    
-    Wraps functions with Celery task registration and callback handling,
-    ensuring proper task lifecycle management and error handling.
-    
+    Context manager that selectively dispatches lex_shared_task decorated functions
+    to Celery workers while keeping others synchronous.
+    """
+
+    # Thread-local storage for the active context
+    _local = threading.local()
+
+    def __init__(self, include_tasks: Optional[Set[str]] = None,
+                 exclude_tasks: Optional[Set[str]] = None):
+        """
+        Initialize the context manager.
+
+        Args:
+            include_tasks: Set of task names to dispatch (if None, dispatch all lex_shared_tasks)
+            exclude_tasks: Set of task names to keep synchronous (overrides include_tasks)
+        """
+        self.include_tasks = include_tasks
+        self.exclude_tasks = exclude_tasks or set()
+        self.dispatched_results: List[Any] = []
+
+    def __enter__(self):
+        # Store the context in thread-local storage
+        if not hasattr(self._local, 'contexts'):
+            self._local.contexts = []
+        self._local.contexts.append(self)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Remove this context from thread-local storage
+        if hasattr(self._local, 'contexts') and self._local.contexts:
+            self._local.contexts.pop()
+
+        # Wait for all dispatched tasks to complete
+        self.wait_for_completion()
+
+    def should_dispatch(self, task_name: str) -> bool:
+        """Determine if a task should be dispatched based on include/exclude rules."""
+        if task_name in self.exclude_tasks:
+            return False
+        if self.include_tasks is None:
+            return True
+        return task_name in self.include_tasks
+
+    def add_dispatched_result(self, result):
+        """Add a dispatched task result to track for completion."""
+        self.dispatched_results.append(result)
+
+    def wait_for_completion(self):
+        """Wait for all dispatched tasks to complete."""
+        logger.info(f"Waiting for {len(self.dispatched_results)} dispatched tasks to complete")
+        for result in self.dispatched_results:
+            try:
+                # This will block until the task completes
+                with allow_join_result():
+                    result.get()
+
+                logger.debug(f"Task {result.id} completed successfully")
+            except Exception as e:
+                logger.error(f"Task {result.id} failed: {e}")
+                # You might want to re-raise or handle this differently
+                raise
+        logger.info("All dispatched tasks completed")
+
+    @classmethod
+    def get_current_context(cls) -> Optional['RunInCelery']:
+        """Get the current active context from thread-local storage."""
+        if hasattr(cls._local, 'contexts') and cls._local.contexts:
+            return cls._local.contexts[-1]  # Return the most recent context
+        return None
+
+
+# Enhanced BoundTaskMethod that respects the RunInCelery context
+class EnhancedBoundTaskMethod:
+    """
+    Enhanced version of BoundTaskMethod that checks for RunInCelery context
+    and dispatches tasks accordingly.
+    """
+
+    def __init__(self, instance, task):
+        self.instance = instance
+        self.task = task
+
+    def __call__(self, *args, **kwargs):
+        """Handles direct calls - checks context to decide sync vs async execution."""
+        context = RunInCelery.get_current_context()
+
+        if context is None:
+            # No context - run synchronously
+            return self.task(self.instance, *args, **kwargs)
+
+        # Check if this task should be dispatched
+        task_name = getattr(self.task, 'name', self.task.__name__)
+
+        if context.should_dispatch(task_name):
+            # Dispatch asynchronously - IMPORTANT: prepend self.instance to args
+            logger.debug(f"Dispatching task {task_name} to Celery")
+            result = self.task.delay(self.instance, *args, **kwargs)
+            context.add_dispatched_result(result)
+            return result
+        else:
+            # Run synchronously
+            logger.debug(f"Running task {task_name} synchronously")
+            return self.task(self.instance, *args, **kwargs)
+
+    def delay(self, *args, **kwargs):
+        """Always handles asynchronous .delay() calls."""
+        return self.task.delay(self.instance, *args, **kwargs)
+
+    def apply_async(self, args=None, kwargs=None, **options):
+        """Always handles asynchronous .apply_async() calls."""
+        args = list(args) if args is not None else []
+        kwargs = kwargs or {}
+        return self.task.apply_async(args=[self.instance] + args, kwargs=kwargs, **options)
+
+    def __getattr__(self, name):
+        """Proxy any other attributes to the underlying task."""
+        return getattr(self.task, name)
+
+def register_task_with_context(task_result):
+    """
+    Register a task result with the current RunInCelery context if one exists.
+    This is useful for tasks dispatched outside of the enhanced decorators.
+    """
+    context = RunInCelery.get_current_context()
+    if context is not None:
+        context.add_dispatched_result(task_result)
+    return task_result
+
+
+
+# Enhanced TaskMethodDescriptor
+class EnhancedTaskMethodDescriptor:
+    """
+    Enhanced version of TaskMethodDescriptor that uses EnhancedBoundTaskMethod.
+    """
+
+    def __init__(self, task):
+        self.task = task
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self
+        return EnhancedBoundTaskMethod(instance, self.task)
+
+    def __call__(self, *args, **kwargs):
+        """Handle direct calls on class-level access."""
+        context = RunInCelery.get_current_context()
+
+        if context is None:
+            # No context - run synchronously
+            return self.task(*args, **kwargs)
+
+        # Check if this task should be dispatched
+        task_name = getattr(self.task, 'name', self.task.__name__)
+
+        if context.should_dispatch(task_name):
+            # Dispatch asynchronously
+            logger.debug(f"Dispatching task {task_name} to Celery")
+            result = self.task.delay(*args, **kwargs)
+            context.add_dispatched_result(result)
+            return result
+        else:
+            # Run synchronously
+            logger.debug(f"Running task {task_name} synchronously")
+            return self.task(*args, **kwargs)
+
+    def __getattr__(self, name):
+        """Proxy attribute access to the underlying task."""
+        return getattr(self.task, name)
+
+
+# Updated lex_shared_task decorator
+def lex_shared_task(_func=None, **task_opts):
+    """
+    Enhanced version of lex_shared_task that works with RunInCelery context.
+    """
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                model_context = kwargs.get("model_context", None)
+                context = kwargs.get("context", None)
+                if context:
+                    kwargs.pop('context')
+                if model_context:
+                    kwargs.pop('model_context')
+
+                # Use your existing CeleryCalculationContext
+                with CeleryCalculationContext(context, model_context):
+
+                    result = func(*args, **kwargs)
+
+                return result, args
+            except Exception as e:
+                logger.error(
+                    f"Task {func.__name__} failed with args {args}, kwargs {kwargs}: {e}",
+                    exc_info=True
+                )
+                raise
+
+        options = {
+            'base': CallbackTask,
+            'bind': False,
+        }
+        options.update(task_opts)
+
+        celery_task = shared_task(**options)(wrapper)
+        celery_task.original_func = func
+
+        # Use the enhanced descriptor
+        return EnhancedTaskMethodDescriptor(celery_task)
+
+    if _func is not None and callable(_func):
+        return decorator(_func)
+    else:
+        return decorator
+
+
+
+@lex_shared_task
+def calc_and_save(models: List[Model], *args, **kwargs):
+    """
+    Calculates and saves a list of models with robust error handling and
+    conflict resolution.
+
     Args:
-        func: Function to be decorated as a Celery task
-        
-    Returns:
-        Decorated function with Celery task capabilities
+        models: A list of model instances to process.
+        *args: Additional arguments to pass to the model's calculate() method.
     """
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        """
-        Task wrapper that executes the original function and returns
-        both the result and original arguments for callback processing.
-        """
+    # Initialize counters for a useful summary
+    summary = {
+        "total_models": len(models),
+        "processed_successfully": 0,
+        "conflicts_resolved": 0,
+        "errors": 0
+    }
+
+    for model in models:
         try:
-            result = func(*args, **kwargs)
-            # Return both result and args for callback access to model instances
-            return result, args
+            with model_logging_context(model):
+                logger.info(f"Processing model {model}")
+                model.calculate.original_func()
+                logger.info(f"Finished calculating model {model}")
+
+                # --- Initial Save Attempt ---
+                model.save()
+                logger.info(f"Model saved: {model}")
+                summary["processed_successfully"] += 1
+
         except Exception as e:
-            logger.error(
-                f"Task {func.__name__} failed with args {args}, kwargs {kwargs}: {e}",
-                exc_info=True
-            )
-            raise
-    
-    # Register as Celery shared task with CallbackTask base class
-    return shared_task(base=CallbackTask, bind=True)(wrapper)
+            try:
+                with model_logging_context(model):
+                    # --- Conflict Resolution Logic ---
+                    logger.warning(f"Integrity error for {model}, attempting conflict resolution.")
 
-
-@custom_shared_task
-def calc_and_save(self, models: List[Model], *args, calculation_id=None) -> List[Model]:
-    """
-    Execute calculations for a group of models with proper error handling.
-    
-    This is the main calculation task that processes a list of models,
-    handles save conflicts using delete_models_with_same_defining_fields,
-    and provides detailed error logging.
-    
-    Args:
-        self: Task instance (bound by decorator)
-        models: List of model instances to calculate and save
-        *args: Additional arguments passed to the calculate method
-        calculation_id: Optional calculation ID for logging context
-        
-    Returns:
-        List of successfully processed models
-        
-    Raises:
-        Exception: If any model calculation fails
-    """
-    processed_models = []
-    
-    try:
-        logger.info(f"Starting calculation for {len(models)} models with calculation_id: {calculation_id}")
-        
-        # Set up calculation context for logging
-        with CeleryCalculationContext(calculation_id):
-            for i, model in enumerate(models):
-                try:
-                    # Execute model calculation with calculation_id context available
-                    model.update(*args)
-                    
-                    # Attempt to save the model
-                    try:
+                    def save_and_check():
+                        old_model = model.delete_models_with_same_defining_fields()
+                        model.pk = old_model.pk
                         model.save()
-                        processed_models.append(model)
-                        logger.debug(f"Successfully processed model {i+1}/{len(models)}: {model}")
 
-                    except IntegrityError as integrity_error:
-                        # Handle unique constraint violations using existing method
-                        logger.warning(
-                            f"Integrity error for model {model}, attempting conflict resolution: {integrity_error}"
-                        )
+                    save_and_check()
 
-                        if hasattr(model, 'delete_models_with_same_defining_fields'):
-                            old_model = model.delete_models_with_same_defining_fields()
-                            model.pk = old_model.pk
-                            model.save()
-                            processed_models.append(model)
-                            logger.info(f"Resolved conflict for model {model}")
-                        else:
-                            logger.error(f"Model {model} does not support conflict resolution")
-                            raise
-                            
-                except Exception as model_error:
-                    # Log individual model calculation errors
-                    logger.error(
-                        f"Calculation failed for model {i+1}/{len(models)} ({model}): {model_error}",
-                        exc_info=True
-                    )
-                    
-                    # Update model status to ERROR if it's a CalculationModel
-                    if isinstance(model, CalculationModel):
-                        model.is_calculated = CalculationModel.ERROR
-                        if hasattr(model, 'error_message'):
-                            model.error_message = str(model_error)
-                        try:
-                            model.save(skip_hooks=True)
-                        except Exception as save_error:
-                            logger.error(f"Failed to save error status for {model}: {save_error}")
-                    
-                    # Re-raise to trigger task failure
-                    raise model_error
-                
-        logger.info(f"Successfully completed calculation for {len(processed_models)} models")
-        return processed_models
-        
-    except Exception as batch_error:
-        # Handle batch-level errors
-        logger.error(
-            f"Batch calculation failed for task {self.request.id}: {batch_error}",
-            exc_info=True
-        )
-        raise
+                    logger.info(f"Successfully resolved conflict and saved model {model}")
+                    summary["conflicts_resolved"] += 1
+                    summary["processed_successfully"] += 1
 
+            except Exception as resolution_error:
+                logger.error(f"Conflict resolution FAILED for model {model}: {resolution_error}")
+                summary["errors"] += 1
+                # If resolution fails, re-raise the error to mark the task as failed
+                raise resolution_error
+
+
+    logger.info(f"Task finished. Summary: {summary}")
+    return summary
 
 # Convenience function for backward compatibility
 def get_calc_and_save_task():
     """
     Get the calc_and_save task for use in other modules.
-    
+
     Returns:
         The calc_and_save Celery task
     """
@@ -341,4 +509,4 @@ def get_calc_and_save_task():
 
 
 # Export the task for use in other modules
-__all__ = ['custom_shared_task', 'CallbackTask', 'calc_and_save', 'get_calc_and_save_task']
+__all__ = ['lex_shared_task', 'CallbackTask', 'calc_and_save', 'get_calc_and_save_task']

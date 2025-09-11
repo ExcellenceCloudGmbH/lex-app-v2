@@ -105,7 +105,7 @@ def model_logging_context(instance: Any):
         yield
     except Exception as e:
         # You can access the current instance for logging easily.
-        current_model = _model_context.get().current
+        current_model = _model_context.get()['model_context'].current
         print(f"Error in model context with instance {current_model}: {e}")
         raise
     finally:

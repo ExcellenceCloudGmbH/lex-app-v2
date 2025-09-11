@@ -23,11 +23,22 @@ class OperationContext:
                             'calculation_id': self.calculation_id, 'audit_log_temp': self.audit_log})
         return operation_context.get()
 
-    def get_request(self):
-        return context_id.get()['request_obj']
 
-    def get_calc_id(self):
-        return context_id.get()['calculation_id']
+    @staticmethod
+    def extract_info_request(request):
+        info_to_extract = ['auth']
+
+        return {key:getattr(request, key) for key in info_to_extract if hasattr(request, key)}
+
+
+
+    @staticmethod
+    def get_request():
+        return operation_context.get()['request_obj']
+
+    @staticmethod
+    def get_calc_id():
+        return operation_context.get().get('calculation_id', None)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # Optionally, reset or clear the operation id here if necessary
