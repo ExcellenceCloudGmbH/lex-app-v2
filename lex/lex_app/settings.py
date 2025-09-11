@@ -158,7 +158,10 @@ else:
 
 LOGIN_REDIRECT_URL = "/process_admin/all"
 
-CSRF_TRUSTED_ORIGINS = ["https://*." + os.getenv("DOMAIN_HOSTED", "localhost")]
+CSRF_TRUSTED_ORIGINS = [
+    "https://*." + os.getenv("DOMAIN_HOSTED", "localhost"),
+    "http://localhost:3000",
+]
 
 REACT_APP_BUILD_PATH = (
     Path(__file__).resolve().parent.parent / Path("react/build")
@@ -211,7 +214,7 @@ INSTALLED_APPS = [
     "channels",
     "lex.lex_app.apps.LexAppConfig",
     # "lex_ai",
-    # "simple_history",
+    "simple_history",
     # "django_rq",
     "celery",
     "react",
@@ -228,6 +231,7 @@ INSTALLED_APPS = [
     "rest_framework_api_key",
     "django.contrib.postgres",
     "django_db_views",
+    "oauth2_authcodeflow",
 ]
 
 if repo_name != "lex":
@@ -247,7 +251,13 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "django_cprofile_middleware.middleware.ProfilerMiddleware",
-    # "simple_history.middleware.HistoryRequestMiddleware",
+    "simple_history.middleware.HistoryRequestMiddleware",
+    "lex_app.rest_api.middleware.KeycloakPermissionsMiddleware",
+    # 'mozilla_django_oidc.middleware.SessionRefresh',
+    "lex.lex_app.rest_api.views.authentication.RefreshTokenSessionMiddleware.RefreshTokenSessionMiddleware",
+    "oauth2_authcodeflow.middleware.LoginRequiredMiddleware",
+    "oauth2_authcodeflow.middleware.RefreshSessionMiddleware",
+    "oauth2_authcodeflow.middleware.RefreshAccessTokenMiddleware",
 ]
 
 DJANGO_CPROFILE_MIDDLEWARE_REQUIRE_STAFF = False
@@ -472,41 +482,41 @@ USED_AUTH_BACKEND = "azure_drf"
 
 DATA_UPLOAD_MAX_NUMBER_FIELDS = None
 
-OIDC_AUTH = {
-    # Specify OpenID Connect endpoint. Configuration will be
-    # automatically done based on the discovery document found
-    # at <endpoint>/.well-known/openid-configuration
-    # instance
-    "OIDC_ENDPOINT": os.getenv("KEYCLOAK_URL", "auth_url")
-    + "/realms/"
-    + os.getenv("KEYCLOAK_REALM", "default"),
-    # local
-    # 'OIDC_ENDPOINT': 'https://auth.test-excellence-cloud.de/realms/hassine_realm',
-    # Accepted audiences the ID Tokens can be issued to
-    "OIDC_AUDIENCES": ("account",),
-    # (Optional) Function that resolves id_token into user.
-    # This function receives a request and an id_token dict and expects to
-    # return a User object. The default implementation tries to find the user
-    # based on username (natural key) taken from the 'sub'-claim of the
-    # id_token.
-    # 'OIDC_RESOLVE_USER_FUNCTION': 'oidc_auth.authentication.get_user_by_id',
-    "OIDC_RESOLVE_USER_FUNCTION": "lex_app.auth_helpers.resolve_user",
-    # (Optional) Number of seconds in the past valid tokens can be
-    # issued (default 600)
-    "OIDC_LEEWAY": 600,
-    # (Optional) Time before signing keys will be refreshed (default 24 hrs)
-    "OIDC_JWKS_EXPIRATION_TIME": 24 * 60 * 60,
-    # (Optional) Time before bearer token validity is verified again (default 10 minutes)
-    "OIDC_BEARER_TOKEN_EXPIRATION_TIME": 10 * 60,
-    # (Optional) Token prefix in JWT authorization header (default 'JWT')
-    "JWT_AUTH_HEADER_PREFIX": "JWT",
-    # (Optional) Token prefix in Bearer authorization header (default 'Bearer')
-    "BEARER_AUTH_HEADER_PREFIX": "Bearer",
-    # (Optional) Which Django cache to use
-    "OIDC_CACHE_NAME": "oidc",
-    # (Optional) A cache key prefix when storing and retrieving cached values
-    "OIDC_CACHE_PREFIX": "oidc_auth.",
-}
+# OIDC_AUTH = {
+#     # Specify OpenID Connect endpoint. Configuration will be
+#     # automatically done based on the discovery document found
+#     # at <endpoint>/.well-known/openid-configuration
+#     # instance
+#     "OIDC_ENDPOINT": os.getenv("KEYCLOAK_URL", "auth_url")
+#     + "/realms/"
+#     + os.getenv("KEYCLOAK_REALM", "default"),
+#     # local
+#     # 'OIDC_ENDPOINT': 'https://auth.test-excellence-cloud.de/realms/hassine_realm',
+#     # Accepted audiences the ID Tokens can be issued to
+#     "OIDC_AUDIENCES": ("account",),
+#     # (Optional) Function that resolves id_token into user.
+#     # This function receives a request and an id_token dict and expects to
+#     # return a User object. The default implementation tries to find the user
+#     # based on username (natural key) taken from the 'sub'-claim of the
+#     # id_token.
+#     # 'OIDC_RESOLVE_USER_FUNCTION': 'oidc_auth.authentication.get_user_by_id',
+#     "OIDC_RESOLVE_USER_FUNCTION": "lex_app.auth_helpers.resolve_user",
+#     # (Optional) Number of seconds in the past valid tokens can be
+#     # issued (default 600)
+#     "OIDC_LEEWAY": 600,
+#     # (Optional) Time before signing keys will be refreshed (default 24 hrs)
+#     "OIDC_JWKS_EXPIRATION_TIME": 24 * 60 * 60,
+#     # (Optional) Time before bearer token validity is verified again (default 10 minutes)
+#     "OIDC_BEARER_TOKEN_EXPIRATION_TIME": 10 * 60,
+#     # (Optional) Token prefix in JWT authorization header (default 'JWT')
+#     "JWT_AUTH_HEADER_PREFIX": "JWT",
+#     # (Optional) Token prefix in Bearer authorization header (default 'Bearer')
+#     "BEARER_AUTH_HEADER_PREFIX": "Bearer",
+#     # (Optional) Which Django cache to use
+#     "OIDC_CACHE_NAME": "oidc",
+#     # (Optional) A cache key prefix when storing and retrieving cached values
+#     "OIDC_CACHE_PREFIX": "oidc_auth.",
+# }
 
 # Internationalization
 # https://docs.djangoproject.com/en/3.0/topics/i18n/
@@ -516,36 +526,86 @@ SIMPLE_JWT = {
     "REFRESH_TOKEN_LIFETIME": timedelta(days=2),
 }
 
-OIDC_OP_JWKS_ENDPOINT = "https://login.microsoftonline.com/05de5765-cb4f-40f1-bd36-43c168137df6/discovery/v2.0/keys"
-OIDC_RP_CLIENT_ID = "ed12bb9c-8191-49fb-b1dd-8e5eea9e6ab2"
-OIDC_RP_CLIENT_SECRET = "..53k_1E_31644IlQJotO.2Sfg66-SjwJz"
-OIDC_OP_AUTHORIZATION_ENDPOINT = "https://login.microsoftonline.com/05de5765-cb4f-40f1-bd36-43c168137df6/oauth2/v2.0/authorize"
-OIDC_OP_TOKEN_ENDPOINT = "https://login.microsoftonline.com/05de5765-cb4f-40f1-bd36-43c168137df6/oauth2/v2.0/token"
-OIDC_OP_USER_ENDPOINT = "https://graph.microsoft.com/oidc/userinfo"
+# OIDC_OP_JWKS_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/certs"
+# )
+OIDC_RP_CLIENT_ID = "LEX_LOCAL_ENV"
+OIDC_RP_CLIENT_SECRET = "O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF"
+# OIDC_OP_AUTHORIZATION_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/auth"
+# )
+# OIDC_OP_TOKEN_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/token"
+# )
+# OIDC_OP_USER_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/userinfo"
+# )
+# OIDC_RP_SIGN_ALGO = "RS256"
+# LOGIN_REDIRECT_URL = "http://localhost:3000/"
+# LOGOUT_REDIRECT_URL = "http://localhost:3000/"
+# OIDC_VERIFY_SSL = False
+# OIDC_REDIRECT_REQUIRE_HTTPS = False
+# OIDC_STORE_ID_TOKEN = True
+# OIDC_STORE_ACCESS_TOKEN = True
+# # OIDC_REDIRECT_ALLOWED_HOSTS = ["localhost:3000"]
+# OIDC_DRF_AUTH_BACKEND = "mozilla_django_oidc.auth.OIDCAuthenticationBackend"
+# OIDC_OP_LOGOUT_ENDPOINT = (
+#     "http://exc-testing.com:8080/realms/lex/protocol/openid-connect/logout"
+# )
+# OIDC_OP_LOGOUT_URL_METHOD = (
+#     "lex.lex_app.rest_api.views.authentication.auth.provider_logout"
+# )
+# ALLOW_LOGOUT_GET_METHOD = True
 
-OIDC_DRF_AUTH_BACKEND = "mozilla_django_oidc.auth.OIDCAuthenticationBackend"
+OIDC_OP_DISCOVERY_DOCUMENT_URL = (
+    "http://exc-testing.com/realms/lex/.well-known/openid-configuration"
+)
+# OIDC_CALLBACK_CLASS = "lex.lex_app.rest_api.views.authentication.CustomOIDCAuthenticationCallbackView.CustomOIDCAuthenticationCallbackView"
+AUTHENTICATION_BACKENDS = (
+    # 'mozilla_django_oidc.auth.OIDCAuthenticationBackend',
+    # "lex.lex_app.rest_api.views.authentication.RefreshingOIDCAuthenticationBackend.RefreshingOIDCAuthenticationBackend"
+    # "lex.lex_app.rest_api.views.authentication.KeycloakUMAAuthBackend.KeycloakUMAAuthBackend",
+    "oauth2_authcodeflow.auth.AuthenticationBackend",
+)
+# OIDC_RENEW_ID_TOKEN_EXPIRY_SECONDS = 15
+OIDC_RP_SCOPES = ["openid", "email", "profile"]
+# OIDC_REDIRECT_OK_FIELD_NAME = "next"
+OIDC_MIDDLEWARE_NO_AUTH_URL_PATTERNS = ["/health", "/favicon.ico"]
+OIDC_RP_USE_PKCE = False
+OIDC_MIDDLEWARE_LOGIN_REQUIRED_REDIRECT = True
+CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "*"
+    # add any other hosts your front-end uses
+]
 
-if USED_AUTH_BACKEND == "local":
-    DEFAULT_AUTHENTICATION_CLASSES = (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
-    )
-elif USED_AUTH_BACKEND == "azure_drf":
-    DEFAULT_AUTHENTICATION_CLASSES = (
-        "oidc_auth.authentication.BearerTokenAuthentication",
-        "oidc_auth.authentication.JSONWebTokenAuthentication",
-    )
-elif USED_AUTH_BACKEND == "azure_mozilla":
-    DEFAULT_AUTHENTICATION_CLASSES = (
-        "mozilla_django_oidc.contrib.drf.OIDCAuthentication",
-    )
-else:
-    raise ValueError(
-        "USED_AUTH_BACKEND has to be either local, azure-drf or azure-mozilla, not "
-        + USED_AUTH_BACKEND
-    )
+# if USED_AUTH_BACKEND == "local":
+#     DEFAULT_AUTHENTICATION_CLASSES = (
+#         "rest_framework_simplejwt.authentication.JWTAuthentication",
+#     )
+# elif USED_AUTH_BACKEND == "azure_drf":
+#     DEFAULT_AUTHENTICATION_CLASSES = (
+#         "oidc_auth.authentication.BearerTokenAuthentication",
+#         "oidc_auth.authentication.JSONWebTokenAuthentication",
+#     )
+# elif USED_AUTH_BACKEND == "azure_mozilla":
+#     DEFAULT_AUTHENTICATION_CLASSES = (
+#         "mozilla_django_oidc.contrib.drf.OIDCAuthentication",
+#     )
+# else:
+#     raise ValueError(
+#         "USED_AUTH_BACKEND has to be either local, azure-drf or azure-mozilla, not "
+#         + USED_AUTH_BACKEND
+#     )
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": DEFAULT_AUTHENTICATION_CLASSES,
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        # "mozilla_django_oidc.contrib.drf.OIDCAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
+        # other authentication classes, if needed
+    ],
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
     "TEST_REQUEST_DEFAULT_FORMAT": "json",
     # FIXME: maybe use this at some point (for giving individual access rights):
@@ -571,6 +631,8 @@ CORS_ORIGIN_WHITELIST = [
     "https://" + os.getenv("DOMAIN_HOSTED", "localhost:3000"),
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:8000",
+    "*",
 ]
 
 LANGUAGE_CODE = "en-us"
@@ -648,3 +710,20 @@ LOGGING = {
 
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = None
+
+# KEYCLOAK_ADMIN_CLIENT_ID = os.getenv("KEYCLOAK_ADMIN_CLIENT_ID", "admin-cli")
+# KEYCLOAK_ADMIN_CLIENT_SECRET = os.getenv("KEYCLOAK_ADMIN_CLIENT_SECRET", "Tdl6AMVuaWmYPLhE1RYMnS2Ydejc9mEz")
+
+KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://exc-testing.com/")
+KEYCLOAK_REALM_NAME = os.getenv("KEYCLOAK_REALM_NAME", "lex")
+OIDC_RP_CLIENT_ID = os.getenv("OIDC_RP_CLIENT_ID", "LEX_LOCAL_ENV")
+OIDC_RP_CLIENT_SECRET = os.getenv(
+    "OIDC_RP_CLIENT_SECRET", "O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF"
+)
+OIDC_RP_CLIENT_UUID = os.getenv(
+    "OIDC_RP_CLIENT_UUID", "3e5eeafe-a3b3-469e-9db3-54cff7108d70"
+)
+
+# OIDC_OP_TOKEN_ENDPOINT = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM_NAME}/protocol/openid-connect/token"
+# OIDC_OP_LOGOUT_ENDPOINT = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM_NAME}/protocol/openid-connect/logout"
+# LOGOUT_REDIRECT_URL = os.getenv("LOGOUT_REDIRECT_URL", "http://exc-testing.com/logout")

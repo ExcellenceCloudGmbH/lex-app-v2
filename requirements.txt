@@ -6,7 +6,7 @@ djangorestframework-simplejwt
 djangorestframework-api-key @ git+https://github.com/LundIT/djangorestframework-api-key
 django-filter
 django-extensions
-drf-oidc-auth @ git+https://github.com/LundIT/drf-oidc-auth
+drf-oidc-auth
 mozilla-django-oidc
 XlsxWriter
 scipy
@@ -52,3 +52,4 @@ django-db-views
 pre-commit
 factory-boy
 coverage
+python-jose

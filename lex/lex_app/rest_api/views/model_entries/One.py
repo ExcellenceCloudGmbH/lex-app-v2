@@ -2,15 +2,17 @@ import traceback
 import logging
 
 from django.db import transaction
+from rest_framework_api_key.permissions import HasAPIKey
+
 from lex.lex_app.logging.model_context import model_logging_context
 from rest_framework.exceptions import APIException
 from rest_framework.generics import RetrieveUpdateDestroyAPIView, CreateAPIView
 from rest_framework.mixins import CreateModelMixin, UpdateModelMixin
 
-# import CalculationModel
+from rest_framework.response import Response
+from rest_framework import status
 from lex.lex_app.lex_models.CalculationModel import CalculationModel
 
-# import update_calculation_status
 from lex.lex_app.rest_api.signals import update_calculation_status
 from lex.lex_app.logging.AuditLogMixin import AuditLogMixin
 from lex.lex_app.rest_api.context import OperationContext
@@ -20,6 +22,10 @@ from lex.lex_app.rest_api.views.model_entries.mixins.DestroyOneWithPayloadMixin 
 from lex.lex_app.rest_api.views.model_entries.mixins.ModelEntryProviderMixin import (
     ModelEntryProviderMixin,
 )
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
+
+from lex_app.rest_api.views.permissions.UserPermission import UserPermission
 from lex.lex_app.logging.cache_manager import CacheManager
 from lex_app.logging.websocket_notifier import WebSocketNotifier
 
@@ -33,8 +39,20 @@ class OneModelEntry(
     RetrieveUpdateDestroyAPIView,
     CreateAPIView,
 ):
+    permission_classes = [IsAuthenticated]
+
     def create(self, request, *args, **kwargs):
         model_container = self.kwargs["model_container"]
+        instance = model_container.model_class()
+        if not instance.can_create(request):
+            return Response(
+                {
+                    "message": f"You are not authorized to create a record in {model_container.model_class.__name__}"
+                },
+                status=status.HTTP_400_BAD_REQUEST  # use 400/422 instead of 403
+            )
+
+            # return Response(data={}, status=status.HTTP_204_NO_CONTENT, headers={}, exception=e)
 
         calculationId = self.kwargs["calculationId"]
 
@@ -43,7 +61,7 @@ class OneModelEntry(
             try:
                 with transaction.atomic():
                     response = CreateModelMixin.create(self, request, *args, **kwargs)
-                
+
             except Exception as e:
                 raise APIException(
                     {"error": f"{e} ", "traceback": traceback.format_exc()}
@@ -55,8 +73,9 @@ class OneModelEntry(
 
         model_container = self.kwargs["model_container"]
         calculationId = self.kwargs["calculationId"]
+        instance = model_container.model_class()
 
-        with OperationContext(request, calculationId) as context_id:
+        with OperationContext(request, calculationId):
             instance = model_container.model_class.objects.filter(
                 pk=self.kwargs["pk"]
             ).first()

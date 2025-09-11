@@ -9,6 +9,14 @@ class DestroyOneWithPayloadMixin:
     """
 
     def destroy(self, *args, **kwargs):
-        serializer = self.get_serializer(self.get_object())
+
+        instance = self.get_object()
+        if not instance.can_delete({}):
+            return response.Response({
+                {
+                    "message": f"You are not authorized to this record in {instance.__class__.__name__}"
+                },
+            }, status=status.HTTP_400_BAD_REQUEST)
+        serializer = self.get_serializer(instance)
         super().destroy(*args, **kwargs)
         return response.Response(serializer.data, status=status.HTTP_200_OK)

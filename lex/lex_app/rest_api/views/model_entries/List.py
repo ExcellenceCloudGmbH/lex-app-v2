@@ -28,3 +28,4 @@ class ListModelEntries(ModelEntryProviderMixin, ListAPIView):
     # We use the UserReadRestrictionFilterBackend for filtering out those instances that the user
     #   does not have access to
     filter_backends = [UserReadRestrictionFilterBackend]
+    # permission_classes = [IsAuthenticated, KeycloakUMAPermission]
