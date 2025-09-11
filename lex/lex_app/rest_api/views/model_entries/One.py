@@ -92,7 +92,4 @@ class OneModelEntry(
                         {"error": f"{e} ", "traceback": traceback.format_exc()}
                     )
 
-                # TODO: For sharepoint preview, find a new way to create an audit log with the new structure
-                # if "edited_file" in request.data:
-
                 return response
