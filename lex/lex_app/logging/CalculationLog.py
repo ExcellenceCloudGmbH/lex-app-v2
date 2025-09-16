@@ -7,6 +7,7 @@ from lex.lex_app.lex_models.ModificationRestrictedModelExample import (
     AdminReportsModificationRestriction,
 )
 from django.contrib.contenttypes.fields import GenericForeignKey
+from lex_app.lex_models.LexModel import LexModel
 from django.contrib.contenttypes.models import ContentType
 from lex.lex_app.logging.context_resolver import ContextResolver
 from lex.lex_app.logging.cache_manager import CacheManager
@@ -92,6 +93,7 @@ class CalculationLog(models.Model):
             # 3) Create or get current log entry
             current_model_pk = context_info.current_model.pk if context_info.current_model else None
             
+            # TODO: Test this
             log_entry, _ = cls.objects.get_or_create(
                 calculationId=context_info.calculation_id,
                 auditlog=context_info.audit_log,
@@ -99,7 +101,8 @@ class CalculationLog(models.Model):
                 object_id=current_model_pk,
                 calculationlog=parent_log,
             )
-            
+
+
             # 4) Append message and save
             log_entry.calculation_log = (log_entry.calculation_log or "") + f"\n{message}"
             log_entry.save()

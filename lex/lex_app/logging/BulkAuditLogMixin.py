@@ -2,6 +2,7 @@ import traceback
 from lex.lex_app.logging.AuditLog import AuditLog  # Adjust the import path as needed
 from lex.lex_app.logging.AuditLogStatus import AuditLogStatus  # Adjust the import path as needed
 from lex.lex_app.logging.AuditLogMixinSerializer import _serialize_payload
+from django.contrib.contenttypes.models import ContentType
 
 class BulkAuditLogMixin:
 
@@ -20,7 +21,7 @@ class BulkAuditLogMixin:
             resource=resource,
             action=action,
             payload=payload,
-            calculation_id=self.kwargs.get('calculationId') if hasattr(self, 'kwargs') else None
+            calculation_id=self.kwargs.get('calculationId') if hasattr(self, 'kwargs') else None,
         )
         AuditLogStatus.objects.create(auditlog=audit_log, status='pending')
         return audit_log
@@ -44,8 +45,10 @@ class BulkAuditLogMixin:
             # After saving, refresh the payload of each audit log entry with the full updated data.
             for audit_log, instance in audit_logs:
                 updated_payload = _serialize_payload(self.get_serializer(instance).data)
+                audit_log.content_type = ContentType.objects.get_for_model(instance)
+                audit_log.object_id = instance.pk
                 audit_log.payload = updated_payload
-                audit_log.save(update_fields=["payload"])
+                audit_log.save()
                 AuditLogStatus.objects.filter(auditlog=audit_log).update(status='success')
             return updated_instances
         except Exception as e:
@@ -71,8 +74,14 @@ class BulkAuditLogMixin:
             audit_logs.append(audit_log)
         try:
             deleted_ids = [instance.pk for instance in queryset]
+            instances = [instance for instance in queryset]
             queryset.delete()
-            for audit_log in audit_logs:
+            # TODO: Test
+            for audit_log, instance in zip(audit_logs, instances):
+                audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
+                audit_log.object_id = instance.pk
+                audit_log.payload = updated_payload
+                audit_log.save()
                 AuditLogStatus.objects.filter(auditlog=audit_log).update(status='success')
             return deleted_ids
         except Exception as e:

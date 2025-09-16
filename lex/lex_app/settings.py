@@ -70,30 +70,30 @@ GRAPH_MODELS = {
 
 ASGI_APPLICATION = "lex_app.asgi.application"
 
-# if os.getenv("DEPLOYMENT_ENVIRONMENT") is None:
-#     CHANNEL_LAYERS = {
-#         "default": {
-#             "BACKEND": "channels.layers.InMemoryChannelLayer",
-#         },
-#     }
-# else:
-CHANNEL_LAYERS = {
-    "default": {
-        "BACKEND": "channels_redis.pubsub.RedisPubSubChannelLayer",
-        "CONFIG": {
-            "hosts": [
-                (
-                    f"redis://{os.getenv('REDIS_USERNAME')}:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}/2"
-                    if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
-                    else "redis://127.0.0.1:6379/2"
-                )
-            ],
-            "capacity": 100000,
-            "expiry": 10,
-            "prefix": f"{os.getenv('INSTANCE_RESOURCE_IDENTIFIER', 'local')}:",
+if os.getenv("DEPLOYMENT_ENVIRONMENT") is None:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
         },
-    },
-}
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.pubsub.RedisPubSubChannelLayer",
+            "CONFIG": {
+                "hosts": [
+                    (
+                        f"redis://{os.getenv('REDIS_USERNAME')}:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}/2"
+                        if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
+                        else "redis://127.0.0.1:6379/2"
+                    )
+                ],
+                "capacity": 100000,
+                "expiry": 10,
+                "prefix": f"{os.getenv('INSTANCE_RESOURCE_IDENTIFIER', 'local')}:",
+            },
+        },
+    }
 
 STORAGES = {
     "default": {
@@ -254,7 +254,7 @@ MIDDLEWARE = [
     "simple_history.middleware.HistoryRequestMiddleware",
     "lex_app.rest_api.middleware.KeycloakPermissionsMiddleware",
     # 'mozilla_django_oidc.middleware.SessionRefresh',
-    "lex.lex_app.rest_api.views.authentication.RefreshTokenSessionMiddleware.RefreshTokenSessionMiddleware",
+    # "lex.lex_app.rest_api.views.authentication.RefreshTokenSessionMiddleware.RefreshTokenSessionMiddleware",
     "oauth2_authcodeflow.middleware.LoginRequiredMiddleware",
     "oauth2_authcodeflow.middleware.RefreshSessionMiddleware",
     "oauth2_authcodeflow.middleware.RefreshAccessTokenMiddleware",
@@ -558,7 +558,7 @@ OIDC_RP_CLIENT_SECRET = "O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF"
 # ALLOW_LOGOUT_GET_METHOD = True
 
 OIDC_OP_DISCOVERY_DOCUMENT_URL = (
-    "http://exc-testing.com/realms/lex/.well-known/openid-configuration"
+    "https://auth.excellence-cloud.dev/realms/lex/.well-known/openid-configuration"
 )
 # OIDC_CALLBACK_CLASS = "lex.lex_app.rest_api.views.authentication.CustomOIDCAuthenticationCallbackView.CustomOIDCAuthenticationCallbackView"
 AUTHENTICATION_BACKENDS = (
@@ -714,15 +714,16 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = None
 # KEYCLOAK_ADMIN_CLIENT_ID = os.getenv("KEYCLOAK_ADMIN_CLIENT_ID", "admin-cli")
 # KEYCLOAK_ADMIN_CLIENT_SECRET = os.getenv("KEYCLOAK_ADMIN_CLIENT_SECRET", "Tdl6AMVuaWmYPLhE1RYMnS2Ydejc9mEz")
 
-KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "http://exc-testing.com/")
+KEYCLOAK_URL = os.getenv("KEYCLOAK_URL", "https://auth.excellence-cloud.dev/")
 KEYCLOAK_REALM_NAME = os.getenv("KEYCLOAK_REALM_NAME", "lex")
-OIDC_RP_CLIENT_ID = os.getenv("OIDC_RP_CLIENT_ID", "LEX_LOCAL_ENV")
+OIDC_RP_CLIENT_ID = os.getenv("OIDC_RP_CLIENT_ID", "hazem")
 OIDC_RP_CLIENT_SECRET = os.getenv(
-    "OIDC_RP_CLIENT_SECRET", "O1dT6TEXjsQWbRlzVxjwfUnNHPnwDmMF"
+    "OIDC_RP_CLIENT_SECRET", "ajZBZn4FgS1HK7KIek82SEgMIq1rVwvq"
 )
 OIDC_RP_CLIENT_UUID = os.getenv(
-    "OIDC_RP_CLIENT_UUID", "3e5eeafe-a3b3-469e-9db3-54cff7108d70"
+    "OIDC_RP_CLIENT_UUID", "3575cc8b-ed7c-4e36-b4cd-07da9bfd7b77"
 )
+
 
 # OIDC_OP_TOKEN_ENDPOINT = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM_NAME}/protocol/openid-connect/token"
 # OIDC_OP_LOGOUT_ENDPOINT = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM_NAME}/protocol/openid-connect/logout"

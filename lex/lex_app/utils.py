@@ -79,6 +79,8 @@ class GenericAppConfig(AppConfig):
 
                 absolute_path = os.path.join(root, file)
                 module_name = os.path.relpath(absolute_path, self.project_path)
+                if repo and not module_name.startswith(repo) and repo != 'lex_app':
+                    module_name = f"{repo}.{module_name}"
                 rel_module_name = module_name.replace(os.path.sep, '.')[:-3]
                 module_name = rel_module_name.split('.')[-1]
                 full_module_name = f"{self.subdir}{rel_module_name}"
@@ -89,7 +91,7 @@ class GenericAppConfig(AppConfig):
                     self._process_module(full_module_name, file)
 
     def _dir_filter(self, directory):
-        return directory not in self._EXCLUDED_DIRS
+        return directory not in self._EXCLUDED_DIRS and not directory.startswith(self._EXCLUDED_PREFIXES)
 
     def _is_valid_module(self, module_name, file):
         return (file.endswith('.py') and

@@ -1,7 +1,10 @@
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from lex.lex_app.lex_models.ModificationRestrictedModelExample import AdminReportsModificationRestriction
+from lex_app.lex_models.LexModel import LexModel
 
-class AuditLog(models.Model):
+class AuditLog(LexModel):
     ACTION_CHOICES = (
         ('create', 'Create'),
         ('update', 'Update'),
@@ -14,6 +17,11 @@ class AuditLog(models.Model):
     action = models.CharField(max_length=10, choices=ACTION_CHOICES)
     payload = models.JSONField(blank=True, null=True)
     calculation_id = models.TextField(default='test_id', null=True, blank=True)
+    calculatable_object = GenericForeignKey("content_type", "object_id")
+    content_type = models.ForeignKey(
+        ContentType, on_delete=models.CASCADE, null=True, blank=True
+    )
+    object_id = models.PositiveIntegerField(null=True, blank=True)
 
     class Meta:
         app_label = 'lex_app'

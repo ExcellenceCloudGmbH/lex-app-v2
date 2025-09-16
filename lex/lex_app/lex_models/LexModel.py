@@ -32,6 +32,7 @@ class LexModel(LifecycleModel):
             self.edited_by = f"{context['request_obj'].user.first_name} {context['request_obj'].user.last_name} - {context['request_obj'].user.email}"
         else:
             self.edited_by = 'Initial Data Upload'
+        self.save(skip_hooks=True)
 
     @hook(AFTER_CREATE)
     def update_created_by(self):
@@ -40,6 +41,7 @@ class LexModel(LifecycleModel):
             self.created_by = f"{context['request_obj'].user.first_name} {context['request_obj'].user.last_name} - {context['request_obj'].user.email}"
         else:
             self.created_by = 'Initial Data Upload'
+        self.save(skip_hooks=True)
 
 
     def track(self):
@@ -104,6 +106,7 @@ class LexModel(LifecycleModel):
 
     def can_create(self, request) -> bool:
         """Checks for the 'create' scope in Keycloak."""
+        # return True
         return "create" in self._get_keycloak_permissions(request)
 
     def can_edit(self, request) -> Set[str]:
@@ -116,7 +119,7 @@ class LexModel(LifecycleModel):
     def can_delete(self, request) -> bool:
         """Checks for the 'delete' scope in Keycloak."""
         return "delete" in self._get_keycloak_permissions(request)
-
+    #
     def can_list(self, request) -> bool:
         """Checks for the 'list' scope in Keycloak."""
         return "list" in self._get_keycloak_permissions(request)

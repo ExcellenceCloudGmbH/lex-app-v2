@@ -7,7 +7,7 @@ The framework is designed for scenarios where you need to generate many model va
 based on field combinations and process them efficiently.
 
 Core Components:
-
+b
 1. **CalculatedModelMixin**: The main mixin class that provides calculated model functionality
 2. **ModelCombinationGenerator**: Handles combinatorial expansion of defining fields
 3. **ModelClusterManager**: Manages clustering of models for parallel processing
@@ -849,6 +849,7 @@ def calc_and_save_sync(models, *args):
             
             # Calculate the model
             try:
+                model.save()
                 model.calculate(*args)
                 logger.debug(f"Calculation completed for model {i + 1}")
             except Exception as calc_error:
@@ -870,9 +871,16 @@ def calc_and_save_sync(models, *args):
                 
                 try:
                     # Handle duplicate models with same defining fields
-                    old_model = model.delete_models_with_same_defining_fields()
-                    model.pk = old_model.pk
+                    resolved_model = model.delete_models_with_same_defining_fields()
+
+                    if resolved_model != model:
+                        # Existing model found, use its PK
+                        model.pk = resolved_model.pk
+                        logger.info(f"Using existing model with PK {resolved_model.pk}")
+
+                    # Single save attempt with the resolved model
                     model.save()
+
                     processed_count += 1
                     logger.info(f"Successfully saved model {i + 1} after duplicate handling")
                     
@@ -1560,10 +1568,10 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
                         )
 
                         from lex_app.lex_models.CeleryTaskDispatcher import CeleryTaskDispatcher
-                        # transaction.on_commit(
                         context = operation_context.get()
-                        CeleryTaskDispatcher.dispatch_calculation_groups(processing_groups, *args, context=context)
-                        # )
+                        transaction.on_commit(
+                            lambda : CeleryTaskDispatcher.dispatch_calculation_groups(processing_groups, *args, context=context)
+                        )
                         logger.info(f"Celery dispatch completed for {cls.__name__}")
                         
                     else:
@@ -1626,110 +1634,95 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
             ) from e
 
     def delete_models_with_same_defining_fields(self):
-        """
-        Handle duplicate models with same defining field values.
-        
-        This method checks for existing models with identical defining field values
-        and handles duplicates appropriately. It provides enhanced error messages
-        with context about the defining field values that caused conflicts.
-        
-        Returns:
-            The model instance to use (either existing or current)
-            
-        Raises:
-            CalculatedModelError: If multiple models found with same defining fields
-        """
+        """Handle duplicate models with same defining field values."""
         if not self.defining_fields:
             logger.debug(f"No defining fields configured for {self.__class__.__name__}, returning current model")
             return self
-        
+
         try:
-            # Build filter dictionary from defining fields
+            # Build filter dictionary using proper field resolution
             filter_keys = {}
             defining_field_values = {}
-            
+
             for field_name in self.defining_fields:
                 try:
-                    field_value = getattr(self, field_name)
-                    filter_keys[field_name] = field_value
-                    defining_field_values[field_name] = field_value
-                except AttributeError as attr_error:
+                    # Use _meta to resolve field properly
+                    field = self._meta.get_field(field_name)
+
+                    # Handle ForeignKey fields
+                    if hasattr(field, 'remote_field') and field.remote_field:
+                        # For ForeignKey, use the _id field name for filtering
+                        filter_field_name = f"{field_name}_id"
+                        related_obj = getattr(self, field_name, None)
+                        if related_obj is not None:
+                            field_value = related_obj.pk
+                            defining_field_values[field_name] = str(related_obj)
+                        else:
+                            # Fallback to direct _id field access
+                            field_value = getattr(self, filter_field_name, None)
+                            defining_field_values[field_name] = field_value
+                        filter_keys[filter_field_name] = field_value
+                    else:
+                        # Regular field
+                        field_value = getattr(self, field_name)
+                        filter_keys[field_name] = field_value
+                        defining_field_values[field_name] = field_value
+
+                except Exception as field_error:
+                    available_fields = [f.name for f in self._meta.get_fields()]
                     raise CalculatedModelError(
                         f"Model {self.__class__.__name__} does not have defining field '{field_name}'",
                         field_name=field_name,
                         model_class=self.__class__.__name__,
-                        available_fields=list(self.__dict__.keys())
-                    ) from attr_error
-            
-            logger.debug(
-                f"Checking for duplicate models of type {self.__class__.__name__} "
-                f"with defining fields: {defining_field_values}"
-            )
-            
-            # Query for existing models with same defining field values
+                        available_fields=available_fields
+                    ) from field_error
+
+            logger.debug(f"Checking for duplicates with filter: {filter_keys}")
+
+            # Query for existing models
             try:
                 filtered_objects = type(self).objects.filter(**filter_keys)
                 object_count = filtered_objects.count()
 
-                logger.debug(f"Found {object_count} existing models with same defining field values")
-
                 if object_count == 1:
-                    logger.error(
-                        f"HASKJHKSDJFH"
-                    )
-                    # Exactly one existing model found
                     existing_model = filtered_objects.first()
-                    logger.error(
-                        f"Found existing model with ID {existing_model.pk} for defining fields: {defining_field_values}"
-                    )
+                    logger.debug(f"Found existing model with ID {existing_model.pk}")
                     return existing_model
-
                 elif object_count == 0:
-                    # No existing models found, use current model
-                    logger.debug(f"No existing models found, using current model for defining fields: {defining_field_values}")
+                    # Reset primary key for fresh insert
+                    if self.pk is not None:
+                        self.pk = None
+                        if hasattr(self, 'id'):
+                            self.id = None
+                    logger.debug("No existing models found, using current model")
                     return self
-
                 else:
-                    # Multiple models found - this is an error condition
+                    # Multiple models found - data integrity issue
                     existing_ids = list(filtered_objects.values_list('pk', flat=True))
-
-                    # Build detailed error message with defining field context
-                    field_details = []
-                    for field_name, field_value in defining_field_values.items():
-                        field_details.append(f"{field_name}={field_value}")
-
+                    field_details = [f"{k}={v}" for k, v in defining_field_values.items()]
                     defining_fields_str = ", ".join(field_details)
 
                     raise CalculatedModelError(
-                        f"Found {object_count} models of type {self.__class__.__name__} with identical defining field values. "
-                        f"Defining fields: [{defining_fields_str}]. "
-                        f"Existing model IDs: {existing_ids}. "
-                        f"This indicates a data integrity issue - defining fields should create unique combinations.",
+                        f"Found {object_count} models with identical defining field values. "
+                        f"Fields: [{defining_fields_str}]. IDs: {existing_ids}.",
                         model_class=self.__class__.__name__,
-                        defining_fields=self.defining_fields,
-                        defining_field_values=defining_field_values,
                         duplicate_count=object_count,
                         existing_ids=existing_ids
                     )
-                    
+
             except Exception as query_error:
                 if isinstance(query_error, CalculatedModelError):
                     raise
-                
                 raise CalculatedModelError(
-                    f"Database query failed when checking for duplicate models: {str(query_error)}",
+                    f"Database query failed: {str(query_error)}",
                     model_class=self.__class__.__name__,
-                    defining_fields=self.defining_fields,
-                    defining_field_values=defining_field_values,
                     filter_keys=filter_keys
                 ) from query_error
-                
+
         except CalculatedModelError:
-            # Re-raise CalculatedModelError as-is
             raise
         except Exception as e:
             raise CalculatedModelError(
-                f"Unexpected error during duplicate model handling: {str(e)}",
-                model_class=self.__class__.__name__,
-                defining_fields=self.defining_fields
+                f"Unexpected error: {str(e)}",
+                model_class=self.__class__.__name__
             ) from e

@@ -1,3 +1,7 @@
+starlette
+httpx
+authlib
+itsdangerous
 setuptools
 wheel
 django~=4.2.20

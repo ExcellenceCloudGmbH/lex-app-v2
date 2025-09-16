@@ -1,7 +1,8 @@
 from django.db import models
 from lex.lex_app.logging.AuditLog import AuditLog  # Adjust the import according to your project structure
+from lex_app.lex_models.LexModel import LexModel
 
-class AuditLogStatus(models.Model):
+class AuditLogStatus(LexModel):
     auditlog = models.ForeignKey(
         AuditLog,
         related_name='status_records',

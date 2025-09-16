@@ -67,7 +67,8 @@ class LexSerializer(serializers.ModelSerializer):
         request = self.context.get('request')
 
         # The can_read method from LexModel returns the set of visible fields.
-        visible_fields = instance.can_read(request)
+        visible_fields = instance.can_read(request) if hasattr(instance, 'can_read') else {f.name for f in instance._meta.fields}
+
         if not visible_fields:
             return {}
 
@@ -78,7 +79,7 @@ class LexSerializer(serializers.ModelSerializer):
         # Filter the representation to only include visible fields.
         # The `scopes` field is always included if the record is visible.
         for field_name in list(representation.keys()):
-            if field_name not in visible_fields and field_name != 'lex_reserved_scopes' and field_name not in ['id', 'id_field', SHORT_DESCR_NAME]:
+            if field_name not in visible_fields and field_name not in ['history_id', 'calculation_record', 'lex_reserved_scopes', 'id', 'id_field', SHORT_DESCR_NAME]:
                 representation.pop(field_name)
 
         return representation

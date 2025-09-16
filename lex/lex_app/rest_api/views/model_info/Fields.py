@@ -78,6 +78,7 @@ def create_field_info(field):
         "editable": field.editable and not isinstance(field, AutoField),
         "required": not (field.null or default is not None),
         "default_value": default,
+        'is_pk': bool(field.primary_key),
     }
     if ftype == ForeignKey:
         info["target"] = field.related_model._meta.model_name

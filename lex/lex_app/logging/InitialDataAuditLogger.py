@@ -89,7 +89,7 @@ class InitialDataAuditLogger:
                     resource=resource,
                     action="create",
                     payload=payload,
-                    calculation_id=calculation_id
+                    calculation_id=calculationd
                 )
                 
                 # Create initial status record

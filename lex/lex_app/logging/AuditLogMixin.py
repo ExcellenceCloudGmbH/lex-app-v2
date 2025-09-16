@@ -1,6 +1,8 @@
 import traceback
 from lex.lex_app.logging.AuditLog import AuditLog
 from lex.lex_app.logging.AuditLogStatus import AuditLogStatus  # Adjust the import path as needed
+
+from django.contrib.contenttypes.models import ContentType
 from lex.lex_app.logging.AuditLogMixinSerializer import _serialize_payload
 
 class AuditLogMixin:
@@ -8,12 +10,13 @@ class AuditLogMixin:
         payload = _serialize_payload(payload or {})
         user = self.request.user if hasattr(self.request, 'user') else None
         resource = target.__name__.lower() if isinstance(target, type) else target.__class__.__name__.lower()
+
         audit_log = AuditLog.objects.create(
             author=f"{str(user)} ({user.username})" if user else None,
             resource=resource,
             action=action,
             payload=payload,
-            calculation_id=self.kwargs.get('calculationId')
+            calculation_id=self.kwargs.get('calculationId'),
         )
         AuditLogStatus.objects.create(auditlog=audit_log, status='pending')
         return audit_log
@@ -23,6 +26,9 @@ class AuditLogMixin:
         audit_log = self.log_change("create", serializer.Meta.model, payload=payload)
         try:
             instance = serializer.save()
+            audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
+            audit_log.object_id = instance.pk
+            audit_log.save()
             AuditLogStatus.objects.filter(auditlog=audit_log).update(status='success')
             return instance
         except Exception as e:
@@ -37,8 +43,10 @@ class AuditLogMixin:
         try:
             instance = serializer.save()
             updated_payload = _serialize_payload(self.get_serializer(instance).data)
+            audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
+            audit_log.object_id = instance.pk
             audit_log.payload = updated_payload
-            audit_log.save(update_fields=["payload"])
+            audit_log.save()
             AuditLogStatus.objects.filter(auditlog=audit_log).update(status='success')
             return instance
         except Exception as e:
@@ -53,6 +61,9 @@ class AuditLogMixin:
         audit_log = self.log_change("delete", instance, payload=payload)
         try:
             instance.delete()
+            audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
+            audit_log.object_id = instance.pk
+            audit_log.save()
             AuditLogStatus.objects.filter(auditlog=audit_log).update(status='success')
         except Exception as e:
             error_msg = traceback.format_exc()

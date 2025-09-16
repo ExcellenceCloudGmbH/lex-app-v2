@@ -13,5 +13,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         # 1) Connect to Keycloak using client credentials
 
-        payload = KeycloakManager().export_authorization_settings(settings.OIDC_RP_CLIENT_UUID)
-        KeycloakManager().import_authorization_settings(Path('/home/syscall/LUND_IT/ArmiraCashflowDB/test.json'), settings.OIDC_RP_CLIENT_UUID)
+        # payload = KeycloakManager().export_authorization_settings(settings.OIDC_RP_CLIENT_UUID)
+        # KeycloakManager().import_authorization_settings(Path('/home/syscall/LUND_IT/ArmiraCashflowDB/test.json'), settings.OIDC_RP_CLIENT_UUID)
+        # KeycloakManager().setup_django_model_permissions_scope_based()
+        print(KeycloakManager().export_authorization_settings(settings.OIDC_RP_CLIENT_UUID))

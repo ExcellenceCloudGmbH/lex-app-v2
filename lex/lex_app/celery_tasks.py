@@ -4,8 +4,10 @@ Celery task infrastructure with custom decorators and callback handling.
 This module provides enhanced Celery task integration with proper lifecycle
 management, status tracking, and error handling for calculation models.
 """
-
+import asyncio
 import logging
+import os
+import traceback
 from copy import deepcopy
 from functools import wraps
 from typing import Dict, Tuple
@@ -19,15 +21,15 @@ from celery.signals import task_postrun
 from django.db import transaction
 from django.db.models import Model
 
-from lex.lex_app.lex_models.CalculationModel import CalculationModel
 from lex.lex_app.rest_api.signals import update_calculation_status
 from lex.lex_app.rest_api.context import operation_context, OperationContext
 from celery.app.control import Control
 import threading
-from contextlib import contextmanager
+from asgiref.sync import sync_to_async
 from typing import List, Optional, Set, Callable, Any
 
-
+from lex.lex_app.lex_models.CalculationModel import CalculationModel
+from lex.lex_app.model_utils.LexAuthentication import LexAuthentication
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +139,7 @@ class CallbackTask(Task):
                 
             # Extract model instances from task arguments
             model_instances = self._extract_model_instances(args)
-            
+
             for model_instance in model_instances:
                 if isinstance(model_instance, CalculationModel):
                     self._update_model_status(
@@ -175,7 +177,7 @@ class CallbackTask(Task):
                 model_instances = [item for item in first_arg if isinstance(item, Model)]
                 
         return model_instances
-    
+
     def _update_model_status(
         self, 
         model_instance: CalculationModel, 
@@ -428,7 +430,7 @@ def lex_shared_task(_func=None, **task_opts):
         options.update(task_opts)
 
         celery_task = shared_task(**options)(wrapper)
-        celery_task.original_func = func
+        # celery_task.original_func = func
 
         # Use the enhanced descriptor
         return EnhancedTaskMethodDescriptor(celery_task)
@@ -439,18 +441,152 @@ def lex_shared_task(_func=None, **task_opts):
         return decorator
 
 
+@lex_shared_task(name="initial_data_upload")
+def load_data(test, generic_app_models, audit_logging_enabled=None, authentication_settings=None):
+    """
+    Load data asynchronously if conditions are met.
+
+    Args:
+        test: ProcessAdminTestCase instance
+        generic_app_models: Dictionary of model classes
+        audit_logging_enabled: Optional override for audit logging enablement
+        calculation_id: Optional calculation ID for audit logging continuity
+    """
+    from lex.lex_app.apps import should_load_data, _create_audit_logger_for_task
+    if should_load_data(authentication_settings):
+        # Create audit logger if enabled, with support for Celery context
+        audit_logger = _create_audit_logger_for_task(audit_logging_enabled)
+
+        try:
+            test.test_path = authentication_settings.initial_data_load
+            print("All models are empty: Starting Initial Data Fill")
+
+            if audit_logger:
+                print(f"Audit logging enabled for initial data upload ")
+            else:
+                print("Audit logging disabled for initial data upload")
+
+            # Handle both synchronous and asynchronous contexts
+            if os.getenv("STORAGE_TYPE", "LEGACY") == "LEGACY":
+                if _is_running_in_celery():
+                    # Direct synchronous call in Celery worker
+                    test.setUp(audit_logger)
+                else:
+                    # Async context outside Celery
+                    asyncio.run(sync_to_async(test.setUp)(audit_logger))
+            else:
+                if os.getenv("CELERY_ACTIVE") or _is_running_in_celery():
+                    # Direct synchronous call in Celery worker
+                    test.setUpCloudStorage(generic_app_models, audit_logger)
+                else:
+                    # Async context outside Celery
+                    asyncio.run(sync_to_async(test.setUpCloudStorage)(generic_app_models, audit_logger))
+
+            # Finalize audit logging if enabled
+            if audit_logger:
+                try:
+                    summary = audit_logger.finalize_batch()
+                    print(f"Audit logging summary: {summary}")
+
+                    # Log any issues found in the summary
+                    if 'statistics_errors' in summary and summary['statistics_errors']:
+                        print(f"Warning: Audit logging had {len(summary['statistics_errors'])} statistics errors")
+                        for error in summary['statistics_errors']:
+                            print(f"  - {error}")
+
+                    # Check for pending operations that might indicate issues
+                    if summary.get('pending_operations', 0) > 0:
+                        print(f"Warning: {summary['pending_operations']} audit log operations remain pending")
+
+                except Exception as e:
+                    print(f"Warning: Failed to finalize audit logging: {e}")
+                    traceback.print_exc()
+
+                    # Try emergency cleanup if finalization fails
+                    try:
+                        if hasattr(audit_logger, 'batch_manager'):
+                            emergency_count = audit_logger.batch_manager.emergency_flush_and_clear()
+                            print(f"Emergency cleanup processed {emergency_count} operations")
+                    except Exception as emergency_error:
+                        print(f"Emergency cleanup also failed: {emergency_error}")
+
+            print("Initial Data Fill completed Successfully")
+        except Exception as e:
+            print("Initial Data Fill aborted with Exception:")
+            print(f"Error type: {type(e).__name__}")
+            print(f"Error message: {str(e)}")
+            traceback.print_exc()
+
+            # Try to finalize audit logging even on failure to capture what was processed
+            if audit_logger:
+                try:
+                    print("Attempting to finalize audit logging after failure...")
+                    summary = audit_logger.finalize_batch()
+                    print(f"Audit logging summary (partial due to failure): {summary}")
+
+                    # Provide additional context about what was processed before failure
+                    if summary.get('total_audit_logs', 0) > 0:
+                        success_rate = (summary.get('successful_operations', 0) / summary.get('total_audit_logs',
+                                                                                              1)) * 100
+                        print(
+                            f"Audit logging captured {summary.get('total_audit_logs', 0)} operations with {success_rate:.1f}% success rate before failure")
+
+                except Exception as audit_error:
+                    print(f"Warning: Failed to finalize audit logging after failure: {audit_error}")
+                    traceback.print_exc()
+
+                    # Last resort: try emergency cleanup
+                    try:
+                        if hasattr(audit_logger, 'batch_manager'):
+                            emergency_count = audit_logger.batch_manager.emergency_flush_and_clear()
+                            print(f"Emergency cleanup after failure processed {emergency_count} operations")
+                    except Exception as emergency_error:
+                        print(f"Emergency cleanup after failure also failed: {emergency_error}")
+
+            # Re-raise the original exception
+            raise e
+
+
+def _is_running_in_celery():
+    """
+    Check if the current code is running in a Celery worker context.
+
+    Returns:
+        bool: True if running in Celery worker, False otherwise
+    """
+    try:
+        # Check for Celery-specific environment variables and modules
+        return True
+        import celery
+        from celery import current_task
+
+        # Check if we're in a Celery worker process
+        if current_task and current_task.request:
+            return True
+
+        # Check for Celery worker environment variables
+        if os.getenv('CELERY_WORKER_RUNNING') or os.getenv('CELERY_ACTIVE'):
+            return True
+
+        # Check if the current process is a Celery worker
+        import sys
+        if 'celery' in sys.argv[0] and 'worker' in sys.argv:
+            return True
+
+        return False
+    except (ImportError, AttributeError):
+        # Celery not available or not in task context
+        return False
+
 
 @lex_shared_task
 def calc_and_save(models: List[Model], *args, **kwargs):
     """
     Calculates and saves a list of models with robust error handling and
     conflict resolution.
-
-    Args:
-        models: A list of model instances to process.
-        *args: Additional arguments to pass to the model's calculate() method.
     """
-    # Initialize counters for a useful summary
+    from django.db import IntegrityError
+
     summary = {
         "total_models": len(models),
         "processed_successfully": 0,
@@ -460,42 +596,54 @@ def calc_and_save(models: List[Model], *args, **kwargs):
 
     for model in models:
         try:
-            with model_logging_context(model):
-                logger.info(f"Processing model {model}")
-                model.calculate.original_func()
-                logger.info(f"Finished calculating model {model}")
+            logger.info(f"Processing model {model}")
+            model.calculate()
+            logger.info(f"Finished calculating model {model}")
 
-                # --- Initial Save Attempt ---
-                model.save()
-                logger.info(f"Model saved: {model}")
-                summary["processed_successfully"] += 1
+            # Initial save attempt
+            model.save()
+            logger.info(f"Model saved: {model}")
+            summary["processed_successfully"] += 1
 
-        except Exception as e:
+        except IntegrityError as integrity_error:
             try:
-                with model_logging_context(model):
-                    # --- Conflict Resolution Logic ---
-                    logger.warning(f"Integrity error for {model}, attempting conflict resolution.")
+                logger.warning(f"Integrity error for {model}, attempting conflict resolution.")
 
-                    def save_and_check():
-                        old_model = model.delete_models_with_same_defining_fields()
-                        model.pk = old_model.pk
-                        model.save()
+                # Single attempt conflict resolution - no recursion
+                if hasattr(model, 'delete_models_with_same_defining_fields'):
+                    existing_model = model.delete_models_with_same_defining_fields()
 
-                    save_and_check()
+                    if existing_model != model and existing_model.pk:
+                        # Use existing model's primary key
+                        model.pk = existing_model.pk
+                        logger.info(f"Using existing model PK {existing_model.pk} for conflict resolution")
+                    else:
+                        # Reset PK for fresh insert attempt
+                        model.pk = None
+                        if hasattr(model, 'id'):
+                            model.id = None
 
+                    # Single save attempt after conflict resolution
+                    model.save()
                     logger.info(f"Successfully resolved conflict and saved model {model}")
                     summary["conflicts_resolved"] += 1
                     summary["processed_successfully"] += 1
+                else:
+                    raise integrity_error
 
             except Exception as resolution_error:
                 logger.error(f"Conflict resolution FAILED for model {model}: {resolution_error}")
                 summary["errors"] += 1
-                # If resolution fails, re-raise the error to mark the task as failed
                 raise resolution_error
 
+        except Exception as e:
+            logger.error(f"Unexpected error processing model {model}: {e}")
+            summary["errors"] += 1
+            raise e
 
     logger.info(f"Task finished. Summary: {summary}")
     return summary
+
 
 # Convenience function for backward compatibility
 def get_calc_and_save_task():

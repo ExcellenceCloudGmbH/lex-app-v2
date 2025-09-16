@@ -1,6 +1,7 @@
 import base64
 from urllib.parse import parse_qs
 from rest_framework import filters
+from lex.lex_app.logging.CalculationLog import CalculationLog
 
 # KeycloakManager is no longer needed here as permissions come from middleware
 
@@ -36,27 +37,78 @@ class PrimaryKeyListFilterBackend(filters.BaseFilterBackend):
 
 class UserReadRestrictionFilterBackend(filters.BaseFilterBackend):
     """
-    Refactored to handle record-level visibility based on the 'read' scope.
+    Filter to handle record-level visibility based on 'read' scope.
 
-    This filter performs the first, broad-phase step of authorization for list views.
-    It efficiently filters the queryset at the database level to include only the
-    records for which the user has a specific record-level 'read' permission.
-
-    The final determination of which fields are visible (and whether a record is
-    ultimately shown) is handled by the `PermissionAwareModelSerializer`.
+    For CalculationLog, delegates permission check to linked CalculationModel instance.
     """
+
     def filter_queryset(self, request, queryset, view):
-        # model_class = view.kwargs['model_container'].model_class
-        # resource_name = f"{model_class._meta.app_label}.{model_class.__name__}"
-
-        # Get the permissions list cached on the request by the middleware.
         permitted_pks = []
-        for instance in queryset:
-            # For each instance, call the can_read method.
-            visible_fields = instance.can_read(request)
-            # If the method returns a non-empty set, the user can see the record.
-            if visible_fields:
-                permitted_pks.append(instance.pk)
+        model_class = view.kwargs['model_container'].model_class
 
-        # Return a new queryset containing only the records the user is allowed to see.
+
+        if model_class.__name__ == 'AuditLogStatus':
+            for instance in queryset:
+                try:
+                    audit_log = instance.auditlog
+
+                    related_obj = getattr(audit_log, 'calculatable_object', None)
+                    # If there's a linked CalculationModel with can_read
+                    if related_obj and hasattr(related_obj, 'can_read'):
+                        if related_obj.can_read(request):
+                            permitted_pks.append(instance.pk)
+                    else:
+                        # Optional: fallback policy (allow or deny if no related obj)
+                        # For safety, probably deny by default
+                        permitted_pks.append(instance.pk)
+                        continue
+                except Exception as e:
+                    permitted_pks.append(instance.pk)
+            return queryset.filter(pk__in=permitted_pks)
+
+
+
+        if model_class.__name__ == 'AuditLog':
+            # For each CalculationLog instance, check permission on linked calculatable_object
+            for instance in queryset:
+                try:
+                    related_obj = getattr(instance, 'calculatable_object', None)
+                    # If there's a linked CalculationModel with can_read
+                    if related_obj and hasattr(related_obj, 'can_read'):
+                        if related_obj.can_read(request):
+                            permitted_pks.append(instance.pk)
+                    else:
+                        # Optional: fallback policy (allow or deny if no related obj)
+                        # For safety, probably deny by default
+                        permitted_pks.append(instance.pk)
+                        continue
+                except Exception as e:
+                    permitted_pks.append(instance.pk)
+            return queryset.filter(pk__in=permitted_pks)
+
+        # Special handling for CalculationLog model (or subclass)
+        if model_class.__name__ == 'CalculationLog':
+            # For each CalculationLog instance, check permission on linked calculatable_object
+            for instance in queryset:
+                related_obj = getattr(instance, 'calculatable_object', None)
+                # If there's a linked CalculationModel with can_read
+                if related_obj and hasattr(related_obj, 'can_read'):
+                    if related_obj.can_read(request):
+                        permitted_pks.append(instance.pk)
+                else:
+                    # Optional: fallback policy (allow or deny if no related obj)
+                    # For safety, probably deny by default
+                    permitted_pks.append(instance.pk)
+                    continue
+            return queryset.filter(pk__in=permitted_pks)
+
+        # Default behavior for LexModel subclasses
+        for instance in queryset:
+            if hasattr(instance, 'can_read'):
+                if callable(getattr(instance, 'can_read')):
+                    visible_fields = instance.can_read(request)
+                    if visible_fields:
+                        permitted_pks.append(instance.pk)
+            else:
+                permitted_pks.append(instance.pk)
         return queryset.filter(pk__in=permitted_pks)
