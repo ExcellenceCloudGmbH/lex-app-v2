@@ -15,10 +15,12 @@ from django.db import models
 
 from lex.lex_app.rest_api.context import OperationContext
 from lex.lex_app.logging.config import is_audit_logging_enabled
+from django.contrib.contenttypes.models import ContentType
 from lex.lex_app.logging.CalculationLog import CalculationLog
 from lex.lex_app.logging.model_context import model_logging_context
 
 from lex.lex_app import settings
+from lex_app.celery_tasks import lex_shared_task
 
 
 class ProcessAdminTestCase(TestCase):
@@ -80,8 +82,12 @@ class ProcessAdminTestCase(TestCase):
 
                     calculation_id = audit_log.calculation_id if audit_enabled else None
 
+                    instance = self.tagged_objects[tag]
                     if audit_enabled and CalculationLog.objects.filter(calculationId=calculation_id).count() < 0:
                         audit_log.calculation_id = None
+                        audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
+                        audit_log.object_id = instance.pk
+                        audit_log.payload = updated_payload
                         audit_log.save()
                     # Mark audit log as successful if audit logging is enabled
                     if audit_enabled and audit_log:
@@ -116,10 +122,13 @@ class ProcessAdminTestCase(TestCase):
                         calculation_id = audit_log.calculation_id if audit_enabled else None
                         with OperationContext({}, calculation_id):
                             self.tagged_objects[tag].save()
-
+                        instance = self.tagged_objects[tag]
                         # Mark audit log as successful if audit logging is enabled
                         if audit_enabled and CalculationLog.objects.filter(calculationId=calculation_id).count() < 0:
                             audit_log.calculation_id = None
+                            audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
+                            audit_log.object_id = instance.pk
+                            audit_log.payload = updated_payload
                             audit_log.save()
                         if audit_enabled and audit_log:
                             audit_logger.mark_operation_success(audit_log)
@@ -147,6 +156,7 @@ class ProcessAdminTestCase(TestCase):
                         print(f"Warning: Failed to mark audit log as failed during setUpCloudStorage: {audit_error}")
                 # Re-raise the exception to maintain existing error handling behavior
                 raise
+
 
     def setUp(self, audit_logger=None) -> None:
         from datetime import datetime
