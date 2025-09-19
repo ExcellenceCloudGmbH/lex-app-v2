@@ -1,13 +1,15 @@
 # proxy.py
+import json
 import os
 import time
 import secrets
 from contextlib import suppress
 from inspect import signature
 
+import jwt
 from starlette.applications import Starlette
 from starlette.middleware.sessions import SessionMiddleware
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import RedirectResponse, Response, JSONResponse
 from starlette.requests import Request
 from starlette.routing import Route
 from authlib.integrations.starlette_client import OAuth
@@ -15,6 +17,8 @@ import httpx
 import asyncio
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 from starlette.routing import WebSocketRoute
+
+from lex_app import settings
 
 try:
     from websockets.asyncio.client import connect as ws_connect  # websockets >= 12
@@ -28,6 +32,9 @@ UPSTREAM = os.environ.get("UPSTREAM", "http://127.0.0.1:9000")
 SECRET = os.environ["SESSION_SECRET"]                # 32+ random bytes
 BASE_URL = os.environ["BASE_URL"]                    # e.g. http://localhost:8502
 CALLBACK_URL = BASE_URL + "/auth/callback"
+JWT_SECRET = settings.JWT_SECRET_KEY # Use same secret or a different one
+
+
 
 oauth = OAuth()
 oauth.register(
@@ -162,7 +169,77 @@ async def _ensure_valid_access_token(session: dict) -> dict | None:
     ok = await _refresh_access_token(sid)
     return _get_tokens(sid) if ok else None
 
+
+async def refresh_access_token(session: dict):
+    """
+    Uses the refresh token to get a new access token from Keycloak.
+    """
+    print("Attempting to refresh access token...")
+    refresh_token = session.get("user", {}).get("refresh_token")
+    if not refresh_token:
+        print("No refresh token found in session.")
+        return None
+
+    try:
+        # Use Authlib's built-in token refresh mechanism
+        new_token = await oauth.oidc.fetch_access_token(
+            grant_type='refresh_token',
+            refresh_token=refresh_token
+        )
+
+        # Update the session with the new token details
+        session["user"]["access_token"] = new_token["access_token"]
+        session["user"]["refresh_token"] = new_token.get("refresh_token",
+                                                         refresh_token)  # Keep old refresh token if new one not provided
+        session["user"]["expires_at"] = new_token["expires_at"]
+        session["user"]["expires_in"] = new_token["expires_in"]
+
+        print("Access token refreshed successfully.")
+        return session["user"]
+
+    except Exception as e:
+        print(f"Failed to refresh access token: {e}")
+        return None
+
+
+async def ensure_valid_access_token(session: dict):
+    """
+    Checks if the access token in the session is valid, refreshes it if needed.
+    """
+    if "user" not in session:
+        return None
+
+    user_session = session["user"]
+    expires_at = user_session.get("expires_at", 0)
+
+    # Check if token has expired or is about to expire (within 60 seconds)
+    if expires_at < int(time.time()) + 60:
+        print("Access token expired or expiring soon. Refreshing...")
+        return await refresh_access_token(session)
+    else:
+        print("Access token is still valid.")
+        return user_session
+
+
+# --- NEW: JWT Validation Logic ---
+def validate_jwt_token(token: str):
+    """Validates the JWT token and returns the payload if valid."""
+    try:
+        payload = jwt.decode(
+            token,
+            JWT_SECRET,
+            algorithms=['HS256'],
+            leeway=300  # 5 minutes leeway for clock skew
+        )
+        return payload
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError, jwt.ImmatureSignatureError) as e:
+        print(f"JWT validation failed: {e}")
+        return None
+
+
 # ------------------- Auth routes -------------------
+
+
 
 async def login(request: Request):
     return await oauth.oidc.authorize_redirect(request, CALLBACK_URL)
@@ -232,121 +309,80 @@ async def logout(request: Request):
     return await oauth2_logout(request)
 
 # ------------------- HTTP proxy -------------------
-
-async def proxy(request: Request):
-    if "user" not in request.session:
-        return RedirectResponse(url="/auth/login")
-
-    tokens = await _ensure_valid_access_token(request.session)
-    if not tokens:
-        # stale/invalid session
-        request.session.clear()
-        return RedirectResponse(url="/auth/login")
-
-    method = request.method
-    url = httpx.URL(UPSTREAM + request.url.path)
-    if request.url.query:
-        url = url.copy_with(query=request.url.query)
-
-    # Drop hop-by-hop headers
-    hop_by_hop = {
-        "host","connection","keep-alive","proxy-authenticate","proxy-authorization",
-        "te","trailers","transfer-encoding","upgrade",
-    }
-    fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in hop_by_hop}
-
-    # Identity headers
-    user = request.session["user"]
-    fwd_headers["X-Forwarded-User"] = user.get("email") or ""
-    if tokens.get("access_token"):
-        fwd_headers["Authorization"] = f"Bearer {tokens['access_token']}"
-        fwd_headers["X-Forwarded-Access-Token"] = tokens["access_token"]
-    if tokens.get("id_token"):
-        fwd_headers["X-Forwarded-Id-Token"] = tokens["id_token"]
-
-    body = await request.body()
-    timeout = httpx.Timeout(30.0)
-    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
-        upstream_resp = await client.request(method, url, content=body, headers=fwd_headers)
-
-    drop = hop_by_hop | {"content-length","content-encoding","transfer-encoding","set-cookie"}
-    resp_headers = {k: v for k, v in upstream_resp.headers.items() if k.lower() not in drop}
-
-    response = Response(content=upstream_resp.content,
-                        status_code=upstream_resp.status_code,
-                        headers=resp_headers)
-
-    get_list = getattr(upstream_resp.headers, "get_list", None)
-    if callable(get_list):
-        for c in upstream_resp.headers.get_list("set-cookie"):
-            response.headers.append("set-cookie", c)
-    else:
-        for k, v in upstream_resp.headers.items():
-            if k.lower() == "set-cookie":
-                response.headers.append("set-cookie", v)
-
-    return response
-
-# ------------------- WebSocket proxy -------------------
-
-def _ws_header_kwarg():
-    params = signature(ws_connect).parameters
-    for name in ("extra_headers","additional_headers","headers"):
-        if name in params:
-            return name
-    return None
-
-WS_HEADER_KWARG = _ws_header_kwarg()
-WS_HAS_ORIGIN = "origin" in signature(ws_connect).parameters
-WS_HAS_SUBPROTOCOLS = "subprotocols" in signature(ws_connect).parameters
-
-def _upstream_ws_url_and_origin(client_ws_url: str) -> tuple[str, str]:
-    base = httpx.URL(UPSTREAM)
-    ws_scheme = "wss" if base.scheme == "https" else "ws"
-    target = base.copy_with(
-        scheme=ws_scheme,
-        path=httpx.URL(client_ws_url).path,
-        query=httpx.URL(client_ws_url).query,
-    )
-    origin = f"{base.scheme}://{base.host}"
-    if base.port:
-        origin += f":{base.port}"
-    return str(target), origin
-
 async def ws_proxy(websocket: WebSocket):
     scope_session = websocket.scope.get("session") or {}
-    if "user" not in scope_session:
-        with suppress(Exception):
-            if websocket.client_state != WebSocketState.DISCONNECTED:
-                await websocket.close(code=4401)
-        return
+    user_payload = None
+    auth_method = "none"
 
-    tokens = await _ensure_valid_access_token({"user": scope_session.get("user")})
-    if not tokens:
+    # 1. Check for JWT token first (iframe scenario)
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        jwt_token = auth_header[7:]
+        payload = validate_jwt_token(jwt_token)
+        if payload:
+            user_payload = {
+                'sub': payload.get('sub'),
+                'email': payload.get('email'),
+                'preferred_username': payload.get('preferred_username'),
+                'permissions': payload.get('permissions', {})
+            }
+            auth_method = "jwt"
+
+    # 2. Fall back to session authentication if no JWT
+    if not user_payload and "user" in scope_session:
+        tokens = await _ensure_valid_access_token({"user": scope_session.get("user")})
+        if tokens:
+            user = scope_session["user"]
+            # Fix: Extract user info from userinfo if available, otherwise use what we have
+            userinfo = user.get('userinfo', {})
+            user_payload = {
+                'sub': userinfo.get('sub') or user.get('sub') or tokens.get('userinfo', {}).get('sub'),
+                'email': userinfo.get('email') or user.get('email') or tokens.get('userinfo', {}).get('email'),
+                'preferred_username': (userinfo.get('preferred_username') or
+                                       user.get('preferred_username') or
+                                       tokens.get('userinfo', {}).get('preferred_username')),
+                'access_token': tokens.get('access_token'),
+                'id_token': tokens.get('id_token')
+            }
+            auth_method = "session"
+
+    # 3. Reject if no authentication
+    if not user_payload:
         with suppress(Exception):
             if websocket.client_state != WebSocketState.DISCONNECTED:
                 await websocket.close(code=4401)
         return
 
     target_url, upstream_origin = _upstream_ws_url_and_origin(str(websocket.url))
-
     excluded = {
-        "connection","upgrade","sec-websocket-key","sec-websocket-version",
-        "sec-websocket-protocol","te","proxy-authorization","proxy-authenticate","keep-alive","host","origin",
+        "connection", "upgrade", "sec-websocket-key", "sec-websocket-version",
+        "sec-websocket-protocol", "te", "proxy-authorization", "proxy-authenticate", "keep-alive", "host", "origin",
+        "authorization"  # Remove original auth header
     }
     fwd = [(k, v) for k, v in websocket.headers.items() if k.lower() not in excluded]
 
-    user = scope_session["user"]
-    fwd.append(("X-Forwarded-User", user.get("email") or ""))
-    if tokens.get("access_token"):
-        fwd.append(("Authorization", f"Bearer {tokens['access_token']}"))
-        fwd.append(("X-Forwarded-Access-Token", tokens["access_token"]))
-    if tokens.get("id_token"):
-        fwd.append(("X-Forwarded-Id-Token", tokens["id_token"]))
+    # Add Streamlit authentication headers
+    fwd.append(("X-Streamlit-User-ID", str(user_payload.get("sub") or "")))
+    fwd.append(("X-Streamlit-User-Email", user_payload.get("email") or ""))
+    fwd.append(("X-Streamlit-User-Username", user_payload.get("preferred_username") or ""))
+    fwd.append(("X-Streamlit-Auth-Method", auth_method))
+    fwd.append(("X-Streamlit-User-Permissions", json.dumps(user_payload.get("permissions", {}))))
+
+    # Add legacy headers for backward compatibility
+    fwd.append(("X-Forwarded-User", user_payload.get("email") or ""))
+
+    # Add tokens if available (session auth)
+    if user_payload.get("access_token"):
+        fwd.append(("Authorization", f"Bearer {user_payload['access_token']}"))
+        fwd.append(("X-Forwarded-Access-Token", user_payload["access_token"]))
+    if user_payload.get("id_token"):
+        fwd.append(("X-Forwarded-Id-Token", user_payload["id_token"]))
+
+    # Debug print
+    print(f"WS Headers being forwarded: {dict(fwd)}")
 
     raw_subprotos = websocket.headers.get("sec-websocket-protocol")
     client_subprotocols = [p.strip() for p in raw_subprotos.split(",")] if raw_subprotos else []
-
     kwargs = {}
     if WS_HEADER_KWARG:
         if not WS_HAS_ORIGIN:
@@ -358,7 +394,6 @@ async def ws_proxy(websocket: WebSocket):
         kwargs["subprotocols"] = client_subprotocols
     if "max_size" in signature(ws_connect).parameters:
         kwargs["max_size"] = None
-
     try:
         async with ws_connect(target_url, **kwargs) as upstream:
             chosen = getattr(upstream, "subprotocol", None)
@@ -403,6 +438,130 @@ async def ws_proxy(websocket: WebSocket):
             if websocket.client_state != WebSocketState.DISCONNECTED:
                 await websocket.close()
 
+
+async def proxy(request: Request):
+    user_payload = None
+    auth_method = "none"
+
+    # 1. Check for JWT token first (iframe scenario)
+    auth_header = request.headers.get("auth_token", "")
+    if auth_header.startswith("Bearer "):
+        jwt_token = auth_header[7:]
+        payload = validate_jwt_token(jwt_token)
+        if payload:
+            user_payload = {
+                'sub': payload.get('sub'),
+                'email': payload.get('email'),
+                'preferred_username': payload.get('preferred_username'),
+                'permissions': payload.get('permissions', {})
+            }
+            auth_method = "jwt"
+
+    # 2. Fall back to session authentication if no JWT
+    if not user_payload and "user" in request.session:
+        tokens = await _ensure_valid_access_token(request.session)
+        if tokens:
+            user = request.session["user"]
+            # Fix: Extract user info from userinfo if available, otherwise use what we have
+            userinfo = user.get('userinfo', {})
+            user_payload = {
+                'sub': userinfo.get('sub') or user.get('sub') or tokens.get('userinfo', {}).get('sub'),
+                'email': userinfo.get('email') or user.get('email') or tokens.get('userinfo', {}).get('email'),
+                'preferred_username': (userinfo.get('preferred_username') or
+                                       user.get('preferred_username') or
+                                       tokens.get('userinfo', {}).get('preferred_username')),
+                'access_token': tokens.get('access_token'),
+                'id_token': tokens.get('id_token')
+            }
+            auth_method = "session"
+
+    # 3. Deny access if no authentication
+    if not user_payload:
+        if 'text/html' in request.headers.get('accept', ''):
+            return RedirectResponse(url="/auth/login")
+        return JSONResponse({'error': 'Authentication required'}, status_code=401)
+
+    method = request.method
+    url = httpx.URL(UPSTREAM + request.url.path)
+    if request.url.query:
+        url = url.copy_with(query=request.url.query.encode("utf-8"))
+    # Drop hop-by-hop headers
+    hop_by_hop = {
+        "host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+        "te", "trailers", "transfer-encoding", "upgrade", "authorization"
+    }
+    fwd_headers = {k: v for k, v in request.headers.items() if k.lower() not in hop_by_hop}
+
+    # Add Streamlit authentication headers
+    fwd_headers["X-Streamlit-User-ID"] = str(user_payload.get("sub") or "")
+    fwd_headers["X-Streamlit-User-Email"] = user_payload.get("email") or ""
+    fwd_headers["X-Streamlit-User-Username"] = user_payload.get("preferred_username") or ""
+    fwd_headers["X-Streamlit-Auth-Method"] = auth_method
+    fwd_headers["X-Streamlit-User-Permissions"] = json.dumps(user_payload.get("permissions", {}))
+
+    # Add legacy headers for backward compatibility
+    fwd_headers["X-Forwarded-User"] = user_payload.get("email") or ""
+
+    # Add tokens if available (session auth)
+    if user_payload.get("access_token"):
+        fwd_headers["Authorization"] = f"Bearer {user_payload['access_token']}"
+        fwd_headers["X-Forwarded-Access-Token"] = user_payload["access_token"]
+    if user_payload.get("id_token"):
+        fwd_headers["X-Forwarded-Id-Token"] = user_payload["id_token"]
+
+    # Debug print
+    print(f"HTTP Headers being forwarded: {fwd_headers}")
+
+    body = await request.body()
+    timeout = httpx.Timeout(30.0)
+    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
+        upstream_resp = await client.request(method, url, content=body, headers=fwd_headers)
+
+    drop = hop_by_hop | {"content-length", "content-encoding", "transfer-encoding", "set-cookie"}
+    resp_headers = {k: v for k, v in upstream_resp.headers.items() if k.lower() not in drop}
+
+    response = Response(content=upstream_resp.content,
+                        status_code=upstream_resp.status_code,
+                        headers=resp_headers)
+
+    get_list = getattr(upstream_resp.headers, "get_list", None)
+    if callable(get_list):
+        for c in upstream_resp.headers.get_list("set-cookie"):
+            response.headers.append("set-cookie", c)
+    else:
+        for k, v in upstream_resp.headers.items():
+            if k.lower() == "set-cookie":
+                response.headers.append("set-cookie", v)
+
+    return response
+
+
+# ------------------- WebSocket proxy -------------------
+
+def _ws_header_kwarg():
+    params = signature(ws_connect).parameters
+    for name in ("extra_headers","additional_headers","headers"):
+        if name in params:
+            return name
+    return None
+
+WS_HEADER_KWARG = _ws_header_kwarg()
+WS_HAS_ORIGIN = "origin" in signature(ws_connect).parameters
+WS_HAS_SUBPROTOCOLS = "subprotocols" in signature(ws_connect).parameters
+
+def _upstream_ws_url_and_origin(client_ws_url: str) -> tuple[str, str]:
+    base = httpx.URL(UPSTREAM)
+    ws_scheme = "wss" if base.scheme == "https" else "ws"
+    target = base.copy_with(
+        scheme=ws_scheme,
+        path=httpx.URL(client_ws_url).path,
+        query=httpx.URL(client_ws_url).query,
+    )
+    origin = f"{base.scheme}://{base.host}"
+    if base.port:
+        origin += f":{base.port}"
+    return str(target), origin
+
 # ------------------- Routing -------------------
 
 routes = [
@@ -420,3 +579,4 @@ routes = [
 ]
 app = Starlette(routes=routes)
 app.add_middleware(SessionMiddleware, secret_key=SECRET, https_only=False, same_site="lax")
+

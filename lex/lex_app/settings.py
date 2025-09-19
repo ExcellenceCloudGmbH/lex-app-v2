@@ -600,6 +600,12 @@ CORS_ALLOWED_ORIGINS = [
 #         + USED_AUTH_BACKEND
 #     )
 
+
+JWT_SECRET_KEY = SECRET_KEY
+JWT_ALGORITHM = 'HS256'
+JWT_EXPIRATION_HOURS = 2
+
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         # "mozilla_django_oidc.contrib.drf.OIDCAuthentication",
