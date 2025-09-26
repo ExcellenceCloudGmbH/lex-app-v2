@@ -242,7 +242,7 @@ class KeycloakManager:
             admin_token = self.admin.connection.token['access_token']
 
             # Prepare the request
-            export_url = f"{self.admin.connection.server_url}/admin/realms/{self.realm_name}/clients/{target_client_uuid}/authz/resource-server"
+            export_url = f"{self.admin.connection.server_url}/admin/realms/{self.realm_name}/clients/{target_client_uuid}/authz/resource-server/settings"
 
             headers = {
                 'Authorization': f'Bearer {admin_token}',

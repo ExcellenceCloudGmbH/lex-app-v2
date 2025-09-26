@@ -83,6 +83,8 @@ class ContextResolver:
             parent_record = None
             content_type = None
             parent_content_type = None
+            root = model_ctx.get_root()
+            root_record = None
             
             # Process current model if it exists
             if current_model:
@@ -94,7 +96,15 @@ class ContextResolver:
                         f"Error resolving ContentType for current model: {e}",
                         extra={'calculation_id': calculation_id}
                     )
-            
+            if root:
+                try:
+                    root_record = f"{root._meta.model_name}_{root.pk}"
+                except Exception as e:
+                    logger.warning(
+                        f"Error resolving ContentType for root model: {e}",
+                        extra={'calculation_id': calculation_id}
+                    )
+
             # Process parent model if it exists
             if parent_model:
                 try:
@@ -115,7 +125,8 @@ class ContextResolver:
                 current_record=current_record,
                 parent_record=parent_record,
                 content_type=content_type,
-                parent_content_type=parent_content_type
+                parent_content_type=parent_content_type,
+                root_record=root_record
             )
             
             logger.debug(

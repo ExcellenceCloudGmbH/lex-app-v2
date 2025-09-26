@@ -7,7 +7,7 @@ from lex.lex_app.lex_models.ModificationRestrictedModelExample import (
     AdminReportsModificationRestriction,
 )
 from django.contrib.contenttypes.fields import GenericForeignKey
-from lex_app.lex_models.LexModel import LexModel
+from lex.lex_app.lex_models.LexModel import LexModel
 from django.contrib.contenttypes.models import ContentType
 from lex.lex_app.logging.context_resolver import ContextResolver
 from lex.lex_app.logging.cache_manager import CacheManager
@@ -74,15 +74,27 @@ class CalculationLog(models.Model):
         Args:
             message: The log message to record
         """
+
         logger = logging.getLogger("lex.calclog")
-        
         try:
             # 1) Resolve context using ContextResolver
+
             context_info = ContextResolver.resolve()
-            
+            # logger.warning(f"Context: {context_info}")
+
+
+            parent_debug = None
+            log_debug = None
+
+
+
             # 2) Create parent log entry if needed
             parent_log = None
             if context_info.parent_model and context_info.parent_content_type:
+                parent_debug = {"calculationId": context_info.calculation_id,
+                 "auditlog": context_info.audit_log,
+                 "content_type": context_info.parent_content_type,
+                 "object_id": context_info.parent_model.pk}
                 parent_log, _ = cls.objects.get_or_create(
                     calculationId=context_info.calculation_id,
                     auditlog=context_info.audit_log,
@@ -92,7 +104,13 @@ class CalculationLog(models.Model):
             
             # 3) Create or get current log entry
             current_model_pk = context_info.current_model.pk if context_info.current_model else None
-            
+
+            log_debug = {"calc_id": context_info.calculation_id,
+                 "audit_log": context_info.audit_log,
+                 "content_type": context_info.content_type,
+                 "object_id": current_model_pk,
+                 "calclog": parent_log}
+
             # TODO: Test this
             log_entry, _ = cls.objects.get_or_create(
                 calculationId=context_info.calculation_id,
@@ -103,12 +121,16 @@ class CalculationLog(models.Model):
             )
 
 
+            logger.info(f"Log: {log_debug}")
+            logger.info(f"Parent: {parent_debug}")
             # 4) Append message and save
             log_entry.calculation_log = (log_entry.calculation_log or "") + f"\n{message}"
             log_entry.save()
 
 
-            logger.warning(f"The context_info from CalculationLog, context: {context_info}")
+            root_record = context_info.root_record
+
+            # logger.warning(f"The context_info from CalculationLog, context: {context_info}")
             # 6) Store in cache using CacheManager
             if context_info.current_record:
                 cache_key = CacheManager.build_cache_key(
@@ -141,6 +163,9 @@ class CalculationLog(models.Model):
             
         except Exception as e:
             # Handle any other unexpected errors
+            logger.info(f"ERROR IN CALCULATION LOG")
+            logger.info(f"Log: {log_debug}")
+            logger.info(f"Parent: {parent_debug}")
             logger.error(
                 f"Unexpected error in CalculationLog.log() for message: {message}. Error: {str(e)}",
                 exc_info=True

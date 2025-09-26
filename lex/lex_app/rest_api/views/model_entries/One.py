@@ -25,9 +25,9 @@ from lex.lex_app.rest_api.views.model_entries.mixins.ModelEntryProviderMixin imp
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 
-from lex_app.rest_api.views.permissions.UserPermission import UserPermission
+from lex.lex_app.rest_api.views.permissions.UserPermission import UserPermission
 from lex.lex_app.logging.cache_manager import CacheManager
-from lex_app.logging.websocket_notifier import WebSocketNotifier
+from lex.lex_app.logging.websocket_notifier import WebSocketNotifier
 
 logger = logging.getLogger(__name__)
 

@@ -20,7 +20,7 @@ from lex.lex_app.logging.CalculationLog import CalculationLog
 from lex.lex_app.logging.model_context import model_logging_context
 
 from lex.lex_app import settings
-from lex_app.celery_tasks import lex_shared_task
+from lex.lex_app.celery_tasks import lex_shared_task
 
 
 class ProcessAdminTestCase(TestCase):
@@ -86,8 +86,6 @@ class ProcessAdminTestCase(TestCase):
                     if audit_enabled and CalculationLog.objects.filter(calculationId=calculation_id).count() < 0:
                         audit_log.calculation_id = None
                         audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
-                        audit_log.object_id = instance.pk
-                        audit_log.payload = updated_payload
                         audit_log.save()
                     # Mark audit log as successful if audit logging is enabled
                     if audit_enabled and audit_log:
@@ -127,8 +125,6 @@ class ProcessAdminTestCase(TestCase):
                         if audit_enabled and CalculationLog.objects.filter(calculationId=calculation_id).count() < 0:
                             audit_log.calculation_id = None
                             audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
-                            audit_log.object_id = instance.pk
-                            audit_log.payload = updated_payload
                             audit_log.save()
                         if audit_enabled and audit_log:
                             audit_logger.mark_operation_success(audit_log)
@@ -196,6 +192,19 @@ class ProcessAdminTestCase(TestCase):
                         with model_logging_context(self.tagged_objects[tag]):
                             self.tagged_objects[tag].save()
 
+                    instance = self.tagged_objects[tag]
+                    # Mark audit log as successful if audit logging is enabled
+
+
+                    if audit_enabled:
+                        if CalculationLog.objects.filter(calculationId=calculation_id).count() < 0:
+                            audit_log.calculation_id = None
+                        audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
+                        audit_log.object_id = instance.pk
+                        payload = audit_log.payload
+                        payload['id'] = instance.pk
+                        audit_log.payload = payload
+                        audit_log.save()
                     # Mark audit log as successful if audit logging is enabled
                     if audit_enabled and audit_log:
                         audit_logger.mark_operation_success(audit_log)
@@ -219,21 +228,35 @@ class ProcessAdminTestCase(TestCase):
                             with model_logging_context(self.tagged_objects[tag]):
                                 self.tagged_objects[tag].save()
 
-                        # Mark audit log as successful if audit logging is enabled
+                        instance = self.tagged_objects[tag]
+                        if audit_enabled:
+                            if CalculationLog.objects.filter(calculationId=calculation_id).count() < 0:
+                                audit_log.calculation_id = None
+                            audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
+                            audit_log.object_id = instance.pk
+                            audit_log.save()
+                            # Mark audit log as successful if audit logging is enabled
                         if audit_enabled and audit_log:
                             audit_logger.mark_operation_success(audit_log)
                             
                 elif action == 'delete':
                     # Log audit entry before deletion if audit logging is enabled
-                    if audit_enabled:
-                        audit_log = audit_logger.log_object_deletion(klass, object['filter_parameters'], tag)
-                    
-                    klass.objects.filter(**object['filter_parameters']).delete()
-                    
-                    # Mark audit log as successful if audit logging is enabled
 
-                    if audit_enabled and audit_log:
-                        audit_logger.mark_operation_success(audit_log)
+                    instances = klass.objects.filter(**object['filter_parameters'])
+
+                    for instance in instances:
+
+                        if audit_enabled:
+                            audit_log = audit_logger.log_object_deletion(instance, object['filter_parameters'], tag)
+
+                        if audit_enabled:
+                            audit_log.content_type = ContentType.objects.get_for_model(klass)
+                            audit_log.object_id = instance.pk
+                            audit_log.save()
+
+                        if audit_enabled and audit_log:
+                            audit_logger.mark_operation_success(audit_log)
+                        instance.delete()
                         
             except Exception as e:
                 # Mark audit log as failed if audit logging is enabled and an error occurred

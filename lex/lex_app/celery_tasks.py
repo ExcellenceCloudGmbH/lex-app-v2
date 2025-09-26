@@ -5,6 +5,7 @@ This module provides enhanced Celery task integration with proper lifecycle
 management, status tracking, and error handling for calculation models.
 """
 import asyncio
+import contextvars
 import logging
 import os
 import traceback
@@ -33,10 +34,10 @@ from lex.lex_app.model_utils.LexAuthentication import LexAuthentication
 
 logger = logging.getLogger(__name__)
 
-@task_postrun.connect
-def task_done(sender=None, task_id=None, task=None, args=None, kwargs=None, **kw):
-    control = Control(app=task.app)
-    control.shutdown()
+# @task_postrun.connect
+# def task_done(sender=None, task_id=None, task=None, args=None, kwargs=None, **kw):
+#     control = Control(app=task.app)
+#     control.shutdown()
 
 
 class CeleryCalculationContext:
@@ -241,20 +242,23 @@ class RunInCelery:
         self.include_tasks = include_tasks
         self.exclude_tasks = exclude_tasks or set()
         self.dispatched_results: List[Any] = []
+        self.on_commit_lock = False
 
     def __enter__(self):
         # Store the context in thread-local storage
-        if not hasattr(self._local, 'contexts'):
-            self._local.contexts = []
-        self._local.contexts.append(self)
+        # if not hasattr(self._local, 'contexts'):
+        #     self._local.contexts = []
+        tasks_context.get().get('task_context_stack').append(self)
+        # self._local.contexts.append(self)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         # Remove this context from thread-local storage
-        if hasattr(self._local, 'contexts') and self._local.contexts:
-            self._local.contexts.pop()
+        # if hasattr(self._local, 'contexts') and self._local.contexts:
+        #     self._local.contexts.pop()
+        if tasks_context.get().get('task_context_stack'):
+            tasks_context.get().get('task_context_stack').pop()
 
-        # Wait for all dispatched tasks to complete
         self.wait_for_completion()
 
     def should_dispatch(self, task_name: str) -> bool:
@@ -288,10 +292,46 @@ class RunInCelery:
     @classmethod
     def get_current_context(cls) -> Optional['RunInCelery']:
         """Get the current active context from thread-local storage."""
-        if hasattr(cls._local, 'contexts') and cls._local.contexts:
-            return cls._local.contexts[-1]  # Return the most recent context
+        # if hasattr(cls._local, 'contexts') and cls._local.contexts:
+        #     return cls._local.contexts[-1]  # Return the most recent context
+        # return None
+        if tasks_context.get().get('task_context_stack'):
+            return tasks_context.get().get('task_context_stack')[-1]
         return None
+def print_context_state(location: str = "Unknown"):
+    """Print comprehensive context state for debugging."""
+    print(f"\n=== CONTEXT STATE AT {location.upper()} ===")
 
+    # 1. Operation Context
+    try:
+        from lex.lex_app.rest_api.context import operation_context
+        op_context = operation_context.get()
+        print(f"Operation Context: {op_context}")
+        if op_context:
+            for key, value in op_context.items():
+                print(f"  {key}: {value}")
+    except Exception as e:
+        print(f"Operation Context ERROR: {e}")
+
+    # 2. Model Context
+    try:
+        from lex.lex_app.logging.model_context import _model_context
+        model_ctx = _model_context.get()
+        print(f"Model Context: {model_ctx}")
+        if hasattr(model_ctx, '__dict__'):
+            for key, value in model_ctx.__dict__.items():
+                print(f"  {key}: {value}")
+    except Exception as e:
+        print(f"Model Context ERROR: {e}")
+
+
+    print("=" * 50)
+
+
+tasks_context: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
+    'tasks_context',
+    default={'task_context_stack': []}
+)
 
 # Enhanced BoundTaskMethod that respects the RunInCelery context
 class EnhancedBoundTaskMethod:
@@ -330,11 +370,11 @@ class EnhancedBoundTaskMethod:
         """Always handles asynchronous .delay() calls."""
         return self.task.delay(self.instance, *args, **kwargs)
 
-    def apply_async(self, args=None, kwargs=None, **options):
-        """Always handles asynchronous .apply_async() calls."""
-        args = list(args) if args is not None else []
-        kwargs = kwargs or {}
-        return self.task.apply_async(args=[self.instance] + args, kwargs=kwargs, **options)
+    # def apply_async(self, args=None, kwargs=None, **options):
+    #     """Always handles asynchronous .apply_async() calls."""
+    #     args = list(args) if args is not None else []
+    #     kwargs = kwargs or {}
+    #     return self.task.apply_async(args=[self.instance] + args, kwargs=kwargs, **options)
 
     def __getattr__(self, name):
         """Proxy any other attributes to the underlying task."""
@@ -349,7 +389,6 @@ def register_task_with_context(task_result):
     if context is not None:
         context.add_dispatched_result(task_result)
     return task_result
-
 
 
 # Enhanced TaskMethodDescriptor
@@ -412,7 +451,6 @@ def lex_shared_task(_func=None, **task_opts):
 
                 # Use your existing CeleryCalculationContext
                 with CeleryCalculationContext(context, model_context):
-
                     result = func(*args, **kwargs)
 
                 return result, args
@@ -442,7 +480,7 @@ def lex_shared_task(_func=None, **task_opts):
 
 
 @lex_shared_task(name="initial_data_upload")
-def load_data(test, generic_app_models, audit_logging_enabled=None, authentication_settings=None):
+def load_data(test, generic_app_models, audit_logging_enabled=None, initial_data_load=None):
     """
     Load data asynchronously if conditions are met.
 
@@ -452,102 +490,103 @@ def load_data(test, generic_app_models, audit_logging_enabled=None, authenticati
         audit_logging_enabled: Optional override for audit logging enablement
         calculation_id: Optional calculation ID for audit logging continuity
     """
+    if not initial_data_load:
+        return
     from lex.lex_app.apps import should_load_data, _create_audit_logger_for_task
-    if should_load_data(authentication_settings):
-        # Create audit logger if enabled, with support for Celery context
-        audit_logger = _create_audit_logger_for_task(audit_logging_enabled)
+    # Create audit logger if enabled, with support for Celery context
+    audit_logger = _create_audit_logger_for_task(audit_logging_enabled)
 
-        try:
-            test.test_path = authentication_settings.initial_data_load
-            print("All models are empty: Starting Initial Data Fill")
+    try:
+        test.test_path = initial_data_load
+        print("All models are empty: Starting Initial Data Fill")
 
-            if audit_logger:
-                print(f"Audit logging enabled for initial data upload ")
+        if audit_logger:
+            print(f"Audit logging enabled for initial data upload ")
+        else:
+            print("Audit logging disabled for initial data upload")
+
+        # Handle both synchronous and asynchronous contexts
+        if os.getenv("STORAGE_TYPE", "LEGACY") == "LEGACY":
+            if is_running_in_celery():
+                # Direct synchronous call in Celery worker
+                test.setUp(audit_logger)
             else:
-                print("Audit logging disabled for initial data upload")
-
-            # Handle both synchronous and asynchronous contexts
-            if os.getenv("STORAGE_TYPE", "LEGACY") == "LEGACY":
-                if _is_running_in_celery():
-                    # Direct synchronous call in Celery worker
-                    test.setUp(audit_logger)
-                else:
-                    # Async context outside Celery
-                    asyncio.run(sync_to_async(test.setUp)(audit_logger))
+                # Async context outside Celery
+                asyncio.run(sync_to_async(test.setUp)(audit_logger))
+        else:
+            if os.getenv("CELERY_ACTIVE") or is_running_in_celery():
+                # Direct synchronous call in Celery worker
+                test.setUpCloudStorage(generic_app_models, audit_logger)
             else:
-                if os.getenv("CELERY_ACTIVE") or _is_running_in_celery():
-                    # Direct synchronous call in Celery worker
-                    test.setUpCloudStorage(generic_app_models, audit_logger)
-                else:
-                    # Async context outside Celery
-                    asyncio.run(sync_to_async(test.setUpCloudStorage)(generic_app_models, audit_logger))
+                # Async context outside Celery
+                asyncio.run(sync_to_async(test.setUpCloudStorage)(generic_app_models, audit_logger))
 
-            # Finalize audit logging if enabled
-            if audit_logger:
+        # Finalize audit logging if enabled
+        if audit_logger:
+            try:
+                summary = audit_logger.finalize_batch()
+                print(f"Audit logging summary: {summary}")
+
+                # Log any issues found in the summary
+                if 'statistics_errors' in summary and summary['statistics_errors']:
+                    print(f"Warning: Audit logging had {len(summary['statistics_errors'])} statistics errors")
+                    for error in summary['statistics_errors']:
+                        print(f"  - {error}")
+
+                # Check for pending operations that might indicate issues
+                if summary.get('pending_operations', 0) > 0:
+                    print(f"Warning: {summary['pending_operations']} audit log operations remain pending")
+
+            except Exception as e:
+                print(f"Warning: Failed to finalize audit logging: {e}")
+                traceback.print_exc()
+
+                # Try emergency cleanup if finalization fails
                 try:
-                    summary = audit_logger.finalize_batch()
-                    print(f"Audit logging summary: {summary}")
+                    if hasattr(audit_logger, 'batch_manager'):
+                        emergency_count = audit_logger.batch_manager.emergency_flush_and_clear()
+                        print(f"Emergency cleanup processed {emergency_count} operations")
+                except Exception as emergency_error:
+                    print(f"Emergency cleanup also failed: {emergency_error}")
 
-                    # Log any issues found in the summary
-                    if 'statistics_errors' in summary and summary['statistics_errors']:
-                        print(f"Warning: Audit logging had {len(summary['statistics_errors'])} statistics errors")
-                        for error in summary['statistics_errors']:
-                            print(f"  - {error}")
+        print("Initial Data Fill completed Successfully")
+    except Exception as e:
+        print("Initial Data Fill aborted with Exception:")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error message: {str(e)}")
+        traceback.print_exc()
 
-                    # Check for pending operations that might indicate issues
-                    if summary.get('pending_operations', 0) > 0:
-                        print(f"Warning: {summary['pending_operations']} audit log operations remain pending")
+        # Try to finalize audit logging even on failure to capture what was processed
+        if audit_logger:
+            try:
+                print("Attempting to finalize audit logging after failure...")
+                summary = audit_logger.finalize_batch()
+                print(f"Audit logging summary (partial due to failure): {summary}")
 
-                except Exception as e:
-                    print(f"Warning: Failed to finalize audit logging: {e}")
-                    traceback.print_exc()
+                # Provide additional context about what was processed before failure
+                if summary.get('total_audit_logs', 0) > 0:
+                    success_rate = (summary.get('successful_operations', 0) / summary.get('total_audit_logs',
+                                                                                          1)) * 100
+                    print(
+                        f"Audit logging captured {summary.get('total_audit_logs', 0)} operations with {success_rate:.1f}% success rate before failure")
 
-                    # Try emergency cleanup if finalization fails
-                    try:
-                        if hasattr(audit_logger, 'batch_manager'):
-                            emergency_count = audit_logger.batch_manager.emergency_flush_and_clear()
-                            print(f"Emergency cleanup processed {emergency_count} operations")
-                    except Exception as emergency_error:
-                        print(f"Emergency cleanup also failed: {emergency_error}")
+            except Exception as audit_error:
+                print(f"Warning: Failed to finalize audit logging after failure: {audit_error}")
+                traceback.print_exc()
 
-            print("Initial Data Fill completed Successfully")
-        except Exception as e:
-            print("Initial Data Fill aborted with Exception:")
-            print(f"Error type: {type(e).__name__}")
-            print(f"Error message: {str(e)}")
-            traceback.print_exc()
-
-            # Try to finalize audit logging even on failure to capture what was processed
-            if audit_logger:
+                # Last resort: try emergency cleanup
                 try:
-                    print("Attempting to finalize audit logging after failure...")
-                    summary = audit_logger.finalize_batch()
-                    print(f"Audit logging summary (partial due to failure): {summary}")
-
-                    # Provide additional context about what was processed before failure
-                    if summary.get('total_audit_logs', 0) > 0:
-                        success_rate = (summary.get('successful_operations', 0) / summary.get('total_audit_logs',
-                                                                                              1)) * 100
-                        print(
-                            f"Audit logging captured {summary.get('total_audit_logs', 0)} operations with {success_rate:.1f}% success rate before failure")
-
-                except Exception as audit_error:
-                    print(f"Warning: Failed to finalize audit logging after failure: {audit_error}")
-                    traceback.print_exc()
-
-                    # Last resort: try emergency cleanup
-                    try:
-                        if hasattr(audit_logger, 'batch_manager'):
-                            emergency_count = audit_logger.batch_manager.emergency_flush_and_clear()
-                            print(f"Emergency cleanup after failure processed {emergency_count} operations")
-                    except Exception as emergency_error:
-                        print(f"Emergency cleanup after failure also failed: {emergency_error}")
+                    if hasattr(audit_logger, 'batch_manager'):
+                        emergency_count = audit_logger.batch_manager.emergency_flush_and_clear()
+                        print(f"Emergency cleanup after failure processed {emergency_count} operations")
+                except Exception as emergency_error:
+                    print(f"Emergency cleanup after failure also failed: {emergency_error}")
 
             # Re-raise the original exception
             raise e
 
 
-def _is_running_in_celery():
+def is_running_in_celery():
     """
     Check if the current code is running in a Celery worker context.
 
@@ -586,7 +625,6 @@ def calc_and_save(models: List[Model], *args, **kwargs):
     conflict resolution.
     """
     from django.db import IntegrityError
-
     summary = {
         "total_models": len(models),
         "processed_successfully": 0,
@@ -597,12 +635,12 @@ def calc_and_save(models: List[Model], *args, **kwargs):
     for model in models:
         try:
             logger.info(f"Processing model {model}")
+            model.save()
             model.calculate()
             logger.info(f"Finished calculating model {model}")
-
+            logger.info(f"Model saved: {model}")
             # Initial save attempt
             model.save()
-            logger.info(f"Model saved: {model}")
             summary["processed_successfully"] += 1
 
         except IntegrityError as integrity_error:
@@ -654,6 +692,13 @@ def get_calc_and_save_task():
         The calc_and_save Celery task
     """
     return calc_and_save
+
+
+@lex_shared_task
+def debug_context_in_celery():
+    """Celery task to print context state inside worker."""
+    print_context_state("INSIDE CELERY TASK")
+    return "Context debug completed in Celery"
 
 
 # Export the task for use in other modules

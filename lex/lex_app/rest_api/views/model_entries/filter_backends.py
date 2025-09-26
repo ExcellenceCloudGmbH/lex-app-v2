@@ -2,6 +2,8 @@ import base64
 from urllib.parse import parse_qs
 from rest_framework import filters
 from lex.lex_app.logging.CalculationLog import CalculationLog
+from lex.lex_app.rest_api.helpers import can_read_from_payload
+
 
 # KeycloakManager is no longer needed here as permissions come from middleware
 
@@ -36,79 +38,64 @@ class PrimaryKeyListFilterBackend(filters.BaseFilterBackend):
 
 
 class UserReadRestrictionFilterBackend(filters.BaseFilterBackend):
-    """
-    Filter to handle record-level visibility based on 'read' scope.
-
-    For CalculationLog, delegates permission check to linked CalculationModel instance.
-    """
-
     def filter_queryset(self, request, queryset, view):
-        permitted_pks = []
-        model_class = view.kwargs['model_container'].model_class
+        model_class = view.kwargs["model_container"].model_class
+        name = model_class.__name__
+        if name == "AuditLogStatus":
+            return self._handle_auditlogstatus(request, queryset)
+        if name == "AuditLog":
+            return self._handle_auditlog(request, queryset)
+        if name == "CalculationLog":
+            return self._handle_calculationlog(request, queryset)
+        return self._handle_lexmodel_default(request, queryset)
 
+    def _handle_auditlog(self, request, queryset):
+        permitted = []
+        for row in queryset:
+            try:
+                if can_read_from_payload(request, row):
+                    permitted.append(row.pk)
+            except Exception:
+                permitted.append(row.pk)
+        return queryset.filter(pk__in=permitted)
 
-        if model_class.__name__ == 'AuditLogStatus':
-            for instance in queryset:
-                try:
-                    audit_log = instance.auditlog
-
-                    related_obj = getattr(audit_log, 'calculatable_object', None)
-                    # If there's a linked CalculationModel with can_read
-                    if related_obj and hasattr(related_obj, 'can_read'):
-                        if related_obj.can_read(request):
-                            permitted_pks.append(instance.pk)
-                    else:
-                        # Optional: fallback policy (allow or deny if no related obj)
-                        # For safety, probably deny by default
-                        permitted_pks.append(instance.pk)
-                        continue
-                except Exception as e:
-                    permitted_pks.append(instance.pk)
-            return queryset.filter(pk__in=permitted_pks)
-
-
-
-        if model_class.__name__ == 'AuditLog':
-            # For each CalculationLog instance, check permission on linked calculatable_object
-            for instance in queryset:
-                try:
-                    related_obj = getattr(instance, 'calculatable_object', None)
-                    # If there's a linked CalculationModel with can_read
-                    if related_obj and hasattr(related_obj, 'can_read'):
-                        if related_obj.can_read(request):
-                            permitted_pks.append(instance.pk)
-                    else:
-                        # Optional: fallback policy (allow or deny if no related obj)
-                        # For safety, probably deny by default
-                        permitted_pks.append(instance.pk)
-                        continue
-                except Exception as e:
-                    permitted_pks.append(instance.pk)
-            return queryset.filter(pk__in=permitted_pks)
-
-        # Special handling for CalculationLog model (or subclass)
-        if model_class.__name__ == 'CalculationLog':
-            # For each CalculationLog instance, check permission on linked calculatable_object
-            for instance in queryset:
-                related_obj = getattr(instance, 'calculatable_object', None)
-                # If there's a linked CalculationModel with can_read
-                if related_obj and hasattr(related_obj, 'can_read'):
-                    if related_obj.can_read(request):
-                        permitted_pks.append(instance.pk)
+    def _handle_auditlogstatus(self, request, queryset):
+        permitted = []
+        for status in queryset:
+            try:
+                al = getattr(status, "auditlog", None)
+                if al is None or can_read_from_payload(request, al):
+                    permitted.append(status.pk)
                 else:
-                    # Optional: fallback policy (allow or deny if no related obj)
-                    # For safety, probably deny by default
-                    permitted_pks.append(instance.pk)
-                    continue
-            return queryset.filter(pk__in=permitted_pks)
+                    permitted.append(status.pk)  # allow-by-default fallback
+            except Exception:
+                permitted.append(status.pk)
+        return queryset.filter(pk__in=permitted)
 
-        # Default behavior for LexModel subclasses
+    def _handle_calculationlog(self, request, queryset):
+        # If CalculationLog visibility must follow its AuditLog, delegate through auditlog when present
+        permitted = []
+        for clog in queryset:
+            try:
+                al = getattr(clog, "auditlog", None)
+                if al is None or can_read_from_payload(request, al):
+                    permitted.append(clog.pk)
+                else:
+                    permitted.append(clog.pk)  # allow-by-default fallback
+            except Exception:
+                permitted.append(clog.pk)
+        return queryset.filter(pk__in=permitted)
+
+    def _handle_lexmodel_default(self, request, queryset):
+        permitted = []
         for instance in queryset:
-            if hasattr(instance, 'can_read'):
-                if callable(getattr(instance, 'can_read')):
-                    visible_fields = instance.can_read(request)
-                    if visible_fields:
-                        permitted_pks.append(instance.pk)
+            cr = getattr(instance, "can_read", None)
+            if callable(cr):
+                try:
+                    if cr(request):
+                        permitted.append(instance.pk)
+                except Exception:
+                    permitted.append(instance.pk)  # allow-by-default fallback
             else:
-                permitted_pks.append(instance.pk)
-        return queryset.filter(pk__in=permitted_pks)
+                permitted.append(instance.pk)
+        return queryset.filter(pk__in=permitted)

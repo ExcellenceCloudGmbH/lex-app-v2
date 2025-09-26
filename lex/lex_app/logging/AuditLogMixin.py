@@ -7,12 +7,12 @@ from lex.lex_app.logging.AuditLogMixinSerializer import _serialize_payload
 
 class AuditLogMixin:
     def log_change(self, action, target, payload=None):
-        payload = _serialize_payload(payload or {})
+        payload = payload or {}
         user = self.request.user if hasattr(self.request, 'user') else None
         resource = target.__name__.lower() if isinstance(target, type) else target.__class__.__name__.lower()
 
         audit_log = AuditLog.objects.create(
-            author=f"{str(user)} ({user.username})" if user else None,
+            author=f"{str(user)}" if user else None,
             resource=resource,
             action=action,
             payload=payload,
@@ -22,10 +22,12 @@ class AuditLogMixin:
         return audit_log
 
     def perform_create(self, serializer):
-        payload = _serialize_payload(serializer.validated_data)
+        payload = _serialize_payload(serializer.validated_data) or {}
         audit_log = self.log_change("create", serializer.Meta.model, payload=payload)
         try:
             instance = serializer.save()
+            payload['id'] = instance.pk
+            audit_log.payload = payload
             audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
             audit_log.object_id = instance.pk
             audit_log.save()

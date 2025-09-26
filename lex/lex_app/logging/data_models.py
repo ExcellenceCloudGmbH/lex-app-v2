@@ -28,6 +28,7 @@ class ContextInfo:
     parent_record: Optional[str] = None
     content_type: Optional[ContentType] = None
     parent_content_type: Optional[ContentType] = None
+    root_record: Optional[str] = None
 
 
 @dataclass

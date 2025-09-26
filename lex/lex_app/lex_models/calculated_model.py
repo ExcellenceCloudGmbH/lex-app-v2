@@ -134,9 +134,9 @@ from django.db import transaction
 from django.db.models import Model, UniqueConstraint
 from django.db.models.base import ModelBase
 
-from lex_app import settings
+from lex.lex_app import settings
 from lex.lex_app.rest_api.context import operation_context
-from lex_app.lex_models.LexErrors import *
+from lex.lex_app.lex_models.LexErrors import *
 
 if TYPE_CHECKING:
     pass  # CalculatedModelMixin is defined in this file
@@ -1567,11 +1567,15 @@ class CalculatedModelMixin(Model, metaclass=CalculatedModelMixinMeta):
                             f"models of type {cls.__name__} to Celery"
                         )
 
-                        from lex_app.lex_models.CeleryTaskDispatcher import CeleryTaskDispatcher
                         context = operation_context.get()
-                        transaction.on_commit(
-                            lambda : CeleryTaskDispatcher.dispatch_calculation_groups(processing_groups, *args, context=context)
-                        )
+                        from lex.lex_app.lex_models.CeleryTaskDispatcher import CeleryTaskDispatcher
+                        # from lex.lex_app.celery_tasks import synchronous_on_commit
+                        # synchronous_on_commit(
+                        #     CeleryTaskDispatcher.dispatch_calculation_groups,
+                        #     processing_groups, args, context=context
+                        # )
+
+                        CeleryTaskDispatcher.dispatch_calculation_groups(processing_groups, *args, context=context)
                         logger.info(f"Celery dispatch completed for {cls.__name__}")
                         
                     else:

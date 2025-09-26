@@ -18,24 +18,32 @@ class RefreshTokenSessionMiddleware(SessionRefresh):
         # allow toggling cert-verify in settings
         self.verify_ssl = import_from_settings("OIDC_VERIFY_SSL", False)
 
+    def should_refresh_token(self, request):
+        """Skip refresh for static files, health checks, etc."""
+        skip_paths = ['/static/', '/media/', '/health/', '/metrics/']
+        return not any(request.path.startswith(path) for path in skip_paths)
+
     def process_request(self, request):
-        if not self.is_refreshable_url(request):
+        if not self.is_refreshable_url(request) or not self.should_refresh_token(request):
             return
 
-        now = time.time()
-        exp = request.session.get("oidc_access_token_expiration", 0)
-        if exp > now:
-            return
+        # last_refresh = request.session.get("last_token_refresh", 0)
+        # min_interval = 5  # seconds
+        #
+        # if time.time() - last_refresh < min_interval:
+        #     return
+        #
+        # request.session["last_token_refresh"] = time.time()
 
         rt = request.session.get("oidc_refresh_token")
         if not rt:
             return super().process_request(request)
 
-        # build a cache-safe key that isn’t None
+        # Remove expiration check - refresh on every request
         sid = request.session.session_key or request.COOKIES.get("sessionid")
         lock_key = f"oidc_refresh_lock_{sid}"
         if not cache.add(lock_key, "1", timeout=30):
-            LOGGER.debug("Another process is already refreshing the token")
+            LOGGER.debug("Another process is refreshing the token")
             return
 
         try:
@@ -51,19 +59,16 @@ class RefreshTokenSessionMiddleware(SessionRefresh):
             r.raise_for_status()
             tok = r.json()
 
-            # 1) update access_token + expiration
+            now = time.time()
+
+            # Update tokens
             request.session["oidc_access_token"] = tok["access_token"]
-            expires_in = tok.get(
-                "expires_in",
-                import_from_settings("OIDC_RENEW_ID_TOKEN_EXPIRY_SECONDS", 900),
-            )
+            expires_in = tok.get("expires_in", 900)
             request.session["oidc_access_token_expiration"] = now + expires_in
 
-            # 2) rotate refresh_token
             if "refresh_token" in tok:
                 request.session["oidc_refresh_token"] = tok["refresh_token"]
 
-            # 3) store the new id_token + expiration
             if "id_token" in tok:
                 request.session["oidc_id_token"] = tok["id_token"]
                 claims = jwt.get_unverified_claims(tok["id_token"])
@@ -73,22 +78,15 @@ class RefreshTokenSessionMiddleware(SessionRefresh):
                 request.session["oidc_id_token_expiration"] = exp_claim
 
             request.session.save()
-            LOGGER.debug("successfully refreshed via refresh_token grant")
+            LOGGER.debug("Token refreshed on every request")
+            print(request['access_token'])
 
             if getattr(request, "user", None) and request.user.is_authenticated:
-                # use the newly refreshed access token
                 access_token = tok["access_token"]
                 sync_user_permissions(request.user, access_token)
-                LOGGER.debug("synced UMA permissions after refresh")
-            return
+                LOGGER.debug("UMA permissions synced after refresh")
 
         except Exception as e:
-            LOGGER.warning(
-                "refresh_token grant failed, falling back: %s", e, exc_info=True
-            )
-
+            LOGGER.warning("Token refresh failed: %s", e, exc_info=True)
         finally:
             cache.delete(lock_key)
-
-        # fallback to prompt=none
-        return super().process_request(request)

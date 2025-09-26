@@ -1,4 +1,5 @@
 import contextvars
+from copy import deepcopy
 from typing import Dict, Any
 from uuid import uuid4
 
@@ -26,9 +27,8 @@ class OperationContext:
 
     @staticmethod
     def extract_info_request(request):
-        info_to_extract = ['auth']
-
-        return {key:getattr(request, key) for key in info_to_extract if hasattr(request, key)}
+        info_to_extract = ['user']
+        return {key:deepcopy(getattr(request, key)) for key in info_to_extract if hasattr(request, key)}
 
 
 

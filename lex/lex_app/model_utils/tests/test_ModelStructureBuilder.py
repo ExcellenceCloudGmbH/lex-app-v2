@@ -6,8 +6,8 @@ from types import ModuleType
 from unittest.mock import patch
 from django.test import SimpleTestCase
 
-from lex_app.model_utils.ModelStructureBuilder import ModelStructureBuilder
-from lex_app.model_utils.ModelStructure import ModelStructure
+from lex.lex_app.model_utils.ModelStructureBuilder import ModelStructureBuilder
+from lex.lex_app.model_utils.ModelStructure import ModelStructure
 
 
 class ModelStructureBuilderTests(SimpleTestCase):

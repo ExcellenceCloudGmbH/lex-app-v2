@@ -17,5 +17,4 @@ websocket_urlpatterns = [
          name='calculation-logs'),
     path('ws/calculation_status_update', UpdateCalculationStatusConsumer.as_asgi(),
          name='calculation-status-update'),
-
 ]

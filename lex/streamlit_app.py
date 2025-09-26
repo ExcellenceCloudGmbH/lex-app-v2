@@ -11,11 +11,146 @@ import logging
 
 import streamlit as st
 
-from lex_app.rest_api.views.authentication.KeycloakManager import KeycloakManager
+from lex.lex_app.rest_api.views.authentication.KeycloakManager import KeycloakManager
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+
+import threading
+import time
+import requests
+import os
+import jwt
+import logging
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+
+log = logging.getLogger(__name__)
+
+# -------------------------
+# Token refresh: config
+# -------------------------
+TOKEN_SKEW_SECONDS = 10          # refresh 60s before exp
+REFRESH_MIN_INTERVAL = 15        # floor sleep
+REFRESH_MAX_BACKOFF = 300        # cap backoff to 5 minutes
+
+def _oidc_token_endpoint() -> str:
+    base = os.getenv("KEYCLOAK_URL", "").rstrip("/")
+    realm = os.getenv("KEYCLOAK_REALM", "")
+    return f"{base}/realms/{realm}/protocol/openid-connect/token"
+
+def _decode_exp_no_verify(token: str) -> int:
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
+        return int(claims.get("exp", 0)) if claims else 0
+    except Exception:
+        return 0
+
+def _now() -> int:
+    return int(time.time())
+
+def _compute_next_refresh_at(exp: int, expires_in: int | None) -> int:
+    if exp:
+        return max(_now() + REFRESH_MIN_INTERVAL, exp - TOKEN_SKEW_SECONDS)
+    if expires_in:
+        return _now() + max(REFRESH_MIN_INTERVAL, int(expires_in) - TOKEN_SKEW_SECONDS)
+    # Unknown expiry: retry soon
+    return _now() + REFRESH_MIN_INTERVAL
+
+def _post_refresh(refresh_token: str) -> dict | None:
+    url = _oidc_token_endpoint()
+    # client_id = os.getenv("KEYCLOAK_CLIENT_ID") or ""
+    # client_secret = os.getenv("KEYCLOAK_CLIENT_SECRET") or None
+    client_id = "hazem"
+    client_secret = settings.OIDC_RP_CLIENT_SECRET
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": client_id,
+    }
+    if client_secret:
+        data["client_secret"] = client_secret
+    try:
+        r = requests.post(url, data=data, timeout=15)
+        if r.status_code >= 400:
+            log.warning("Refresh failed: %s %s", r.status_code, r.text)
+            return None
+        return r.json()
+    except Exception as e:
+        log.warning("Refresh exception: %s", e)
+        return None
+
+def _update_tokens_from_response(tok: dict) -> None:
+    access = tok.get("access_token") or ""
+    refresh = tok.get("refresh_token") or st.session_state.get("refresh_token") or ""
+    expires_in = tok.get("expires_in")
+    exp = _decode_exp_no_verify(access) if access else 0
+    st.session_state.access_token = access
+    st.session_state.refresh_token = refresh
+    st.session_state.token_exp = exp
+    st.session_state.expires_in = expires_in
+    # Optionally hydrate user info again if needed by downstream code
+    # user = get_user_info(access) or st.session_state.get("user_info")
+
+def _token_refresher(stop_key: str = "stop_token_refresher") -> None:
+    backoff = 5
+    while not st.session_state.get(stop_key, False):
+        access = st.session_state.get("access_token") or ""
+        refresh = st.session_state.get("refresh_token") or ""
+        exp = st.session_state.get("token_exp") or _decode_exp_no_verify(access)
+        expires_in = st.session_state.get("expires_in")
+
+        # Decide next refresh time
+        next_at = _compute_next_refresh_at(exp, expires_in)
+        sleep_for = max(1, next_at - _now())
+        # Sleep with small increments so stop flag is responsive
+        end_at = _now() + sleep_for
+        while _now() < end_at:
+            if st.session_state.get(stop_key, False):
+                return
+            time.sleep(min(1.0, end_at - _now()))
+
+        if st.session_state.get(stop_key, False):
+            return
+
+        if not refresh:
+            # Nothing to refresh; try again later
+            backoff = min(REFRESH_MAX_BACKOFF, backoff * 2)
+            time.sleep(backoff)
+            continue
+
+        tok = _post_refresh(refresh)
+        print("Access Token", tok.get('access_token'))
+        if tok and tok.get("access_token"):
+            _update_tokens_from_response(tok)
+            backoff = 5  # reset backoff on success
+        else:
+            # Failure: backoff and retry
+            backoff = min(REFRESH_MAX_BACKOFF, backoff * 2)
+            time.sleep(backoff)
+
+def start_token_refresh_thread_if_needed() -> None:
+    if st.session_state.get("token_refresher_started"):
+        return
+    # Require a refresh_token; fall back to header if proxy forwards it
+    if not st.session_state.get("refresh_token"):
+        # Optional header capture if proxy forwards refresh token
+        headers = getattr(st.context, "headers", {}) or {}
+        rt = headers.get("x-streamlit-refresh-token") or ""
+        if rt:
+            st.session_state.refresh_token = rt
+
+    if not st.session_state.get("refresh_token"):
+        # No refresh path; do not start thread
+        st.session_state.token_refresher_started = True
+        return
+
+    st.session_state.stop_token_refresher = False
+    th = threading.Thread(target=_token_refresher, name="token_refresher", daemon=True)
+    add_script_run_ctx(th, get_script_run_ctx())
+    th.start()
+    st.session_state.token_refresher_started = True
+    st.session_state.token_refresher_thread = th
 
 def normalize(d: Dict[str, str]) -> Dict[str, str]:
     """Normalize dictionary keys and values to lowercase."""
@@ -46,7 +181,6 @@ def get_user_info(access_token):
     realm_name = os.getenv("KEYCLOAK_REALM")
 
     if not keycloak_url or not realm_name:
-        logger.error("KEYCLOAK_URL and KEYCLOAK_REALM must be set")
         return None
 
     userinfo_url = f"{keycloak_url}/realms/{realm_name}/protocol/openid-connect/userinfo"
@@ -192,6 +326,18 @@ def authenticate_from_proxy_or_jwt() -> None:
             "email": st.session_state.user_email,
             "preferred_username": st.session_state.user_username,
         }
+        token_from_header = bearer_from_headers(h)  # already available
+
+        st.session_state.access_token = token_from_header
+        st.session_state.token_exp = _decode_exp_no_verify(token_from_header)
+
+        rt_hdr = h.get("x-streamlit-refresh-token")
+        if rt_hdr:
+            st.session_state.refresh_token = rt_hdr
+
+        # Kick off background refresh if a refresh token is present
+        start_token_refresh_thread_if_needed()
+
         logger.info(
             f"Authenticated via {st.session_state.auth_method} as "
             f"{st.session_state.user_email or st.session_state.user_id}"
@@ -229,7 +375,7 @@ if not st.session_state.authenticated:
 #     st.json(st.session_state.user_info)
 
 if __name__ == '__main__':
-    from lex_app.settings import repo_name
+    from lex.lex_app.settings import repo_name
 
     try:
         exec(f"import {repo_name}._streamlit_structure as streamlit_structure")
@@ -243,7 +389,7 @@ if __name__ == '__main__':
             # Instance-level visualization
             try:
                 from django.apps import apps
-                from lex_app.settings import repo_name
+                from lex.lex_app.settings import repo_name
 
                 model_class = apps.get_model(repo_name, model)
                 model_obj = model_class.objects.filter(pk=pk).first()
@@ -266,7 +412,7 @@ if __name__ == '__main__':
             # Class-level visualization
             try:
                 from django.apps import apps
-                from lex_app.settings import repo_name
+                from lex.lex_app.settings import repo_name
 
                 model_class = apps.get_model(repo_name, model)
 
@@ -293,6 +439,11 @@ if __name__ == '__main__':
 
             if auth_method == 'jwt':
                 # For JWT auth, just clear session and show message
+                st.session_state.stop_token_refresher = True
+                th = st.session_state.get("token_refresher_thread")
+                if th and th.is_alive():
+                    # Give it a moment to exit; thread is daemon, so app exit also cleans up
+                    th.join(timeout=1.0)
                 st.session_state.clear()
                 st.success("✅ Logged out successfully. You can close this window.")
                 st.stop()
@@ -407,7 +558,7 @@ if __name__ == '__main__':
 # def safe_import_streamlit_structure():
 #     """Safely import streamlit structure with error handling"""
 #     try:
-#         from lex_app.settings import repo_name
+#         from lex.lex_app.settings import repo_name
 #         exec(f"import {repo_name}._streamlit_structure as streamlit_structure")
 #         return streamlit_structure
 #     except ImportError as e:
@@ -435,7 +586,7 @@ if __name__ == '__main__':
 # def safe_get_keycloak_manager():
 #     """Safely initialize Keycloak manager with error handling"""
 #     try:
-#         from lex_app.rest_api.views.authentication.KeycloakManager import KeycloakManager
+#         from lex.lex_app.rest_api.views.authentication.KeycloakManager import KeycloakManager
 #         return KeycloakManager()
 #     except ImportError as e:
 #         logger.error(f"Failed to import KeycloakManager: {e}")
@@ -483,7 +634,7 @@ if __name__ == '__main__':
 #     """Safely resolve Django model with error handling"""
 #     try:
 #         from django.apps import apps
-#         from lex_app.settings import repo_name
+#         from lex.lex_app.settings import repo_name
 #
 #         model_class = apps.get_model(repo_name, model_name)
 #         return model_class

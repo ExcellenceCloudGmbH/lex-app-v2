@@ -1,4 +1,4 @@
-from lex_app.decorators.LexSingleton import LexSingleton
+from lex.lex_app.decorators.LexSingleton import LexSingleton
 
 
 @LexSingleton

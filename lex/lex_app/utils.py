@@ -8,7 +8,7 @@ from django.db import models
 
 from lex.lex_app.model_utils.ModelRegistration import ModelRegistration
 from lex.lex_app.model_utils.ModelStructureBuilder import ModelStructureBuilder
-from lex_app.model_utils.LexAuthentication import LexAuthentication
+from lex.lex_app.model_utils.LexAuthentication import LexAuthentication
 
 
 # def create_api_key():
@@ -133,7 +133,7 @@ class GenericAppConfig(AppConfig):
 
     # All model Registrations happen here
     def register_models(self):
-        from lex_app.streamlit.Streamlit import Streamlit
+        from lex.lex_app.streamlit.Streamlit import Streamlit
 
         ModelRegistration.register_models(
             [o for o in self.discovered_models.values() if not admin.site.is_registered(o)],

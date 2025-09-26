@@ -2,7 +2,7 @@ import importlib
 import os
 from typing import Dict
 
-from lex_app.model_utils.ModelStructure import ModelStructure
+from lex.lex_app.model_utils.ModelStructure import ModelStructure
 
 
 class ModelStructureBuilder:

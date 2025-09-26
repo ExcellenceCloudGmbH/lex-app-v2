@@ -26,6 +26,10 @@ class ModelContext:
         """
         return self._stack[-1] if self._stack else None
 
+    def get_root(self) -> Optional[Any]:
+        return self._stack[0] if self._stack else None
+
+
     @property
     def parent(self) -> Optional[Any]:
         """

@@ -1,6 +1,7 @@
 import logging
 import traceback
 import uuid
+from copy import deepcopy
 from datetime import datetime
 from typing import Dict, Any, Optional, Type
 from django.db import models, transaction
@@ -8,8 +9,10 @@ from django.db.models import Model
 
 from lex.lex_app.logging.AuditLog import AuditLog
 from lex.lex_app.logging.AuditLogStatus import AuditLogStatus
-from lex.lex_app.logging.AuditLogMixinSerializer import _serialize_payload
+from lex.lex_app.logging.AuditLogMixinSerializer import _serialize_payload, generic_instance_payload
 from lex.lex_app.logging.AuditLogBatchManager import AuditLogBatchManager
+from lex.lex_app.ProcessAdminSettings import processAdminSite
+from lex.lex_app.logging.AuditLogMixin import AuditLogMixin
 
 # Configure logger for audit operations
 logger = logging.getLogger('lex_app.audit.initial_data')
@@ -77,7 +80,8 @@ class InitialDataAuditLogger:
                 )
                 # Fallback to basic serialization
                 payload = {'_serialization_error': str(e), '_original_keys': list(instance_data.keys())}
-            
+
+
             # Add tag information to payload if provided
             if tag:
                 payload['_audit_tag'] = tag
@@ -89,7 +93,7 @@ class InitialDataAuditLogger:
                     resource=resource,
                     action="create",
                     payload=payload,
-                    calculation_id=calculationd
+                    calculation_id=calculation_id
                 )
                 
                 # Create initial status record
@@ -177,11 +181,12 @@ class InitialDataAuditLogger:
                 serialized_updates = {'_serialization_error': str(e), '_original_keys': list(update_data.keys())}
             
             # Create payload with both old and new values for better audit trail
-            payload = {
-                'id': instance_pk,
-                'updates': serialized_updates
-            }
-            
+
+            serialized_updates['id'] = instance_pk
+            payload = deepcopy(update_data)
+            payload['id'] = instance_pk
+            payload['updates'] = serialized_updates
+
             # Add tag information to payload if provided
             if tag:
                 payload['_audit_tag'] = tag
@@ -230,7 +235,7 @@ class InitialDataAuditLogger:
             # Don't raise exception to avoid breaking data upload process
             return None
     
-    def log_object_deletion(self, model_class: Type[Model], filter_params: Dict[str, Any], 
+    def log_object_deletion(self, instance: Model, filter_params: Dict[str, Any],
                           tag: Optional[str] = None) -> Optional[AuditLog]:
         """
         Log object deletion operation.
@@ -243,12 +248,19 @@ class InitialDataAuditLogger:
         Returns:
             AuditLog: The created audit log entry, or None if logging failed
         """
+        model_class = instance.__class__
+        payload = {}
+
+
+
+        resource = model_class.__name__.lower()
         try:
-            resource = model_class.__name__.lower()
-            
             # Safely serialize filter parameters
             try:
-                serialized_filters = _serialize_payload(filter_params)
+                # model_container = processAdminSite.get_container_func(model_class.__name__)
+                # mapping = model_container.serializers_map
+                # serializer = mapping['default']
+                payload = generic_instance_payload(instance)
             except Exception as e:
                 logger.warning(
                     f"Failed to serialize filter parameters for {resource} deletion. Using fallback serialization.",
@@ -263,9 +275,10 @@ class InitialDataAuditLogger:
                 # Fallback to basic serialization
                 serialized_filters = {'_serialization_error': str(e), '_original_keys': list(filter_params.keys())}
             
-            payload = {
-                'filter_parameters': serialized_filters
-            }
+            # payload = {
+            #     'id': instance.pk,
+            #     'filter_parameters': serialized_filters
+            # }
             
             # Add tag information to payload if provided
             if tag:

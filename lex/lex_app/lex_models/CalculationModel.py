@@ -16,7 +16,7 @@ from lex.lex_app.lex_models.LexModel import LexModel
 from lex.lex_app.rest_api.context import operation_context, OperationContext
 from lex.lex_app.logging.cache_manager import CacheManager
 from lex.lex_app.logging.model_context import _model_context
-from lex_app.logging.context_resolver import ContextResolver
+from lex.lex_app.logging.context_resolver import ContextResolver
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +127,8 @@ class CalculationModel(LexModel):
             try:
                 context = ContextResolver.resolve()
                 calc_id = context.calculation_id
-                key_to_clean = CacheManager.build_cache_key(context.calculation_id, context.current_record)
-                cleanup_result = CacheManager.cleanup_calculation(context.calculation_id, specific_keys=[key_to_clean])
+                key_to_clean = CacheManager.build_cache_key(context.current_record, context.calculation_id)
+                cleanup_result = CacheManager.cleanup_calculation(specific_keys=[key_to_clean])
 
                 if cleanup_result.success:
                     logger.info(f"Cache cleanup successful after calculation hook for calculation {calc_id}")
@@ -189,8 +189,8 @@ class CalculationModel(LexModel):
             try:
                 context = ContextResolver.resolve()
                 calc_id = context.calculation_id
-                key_to_clean = CacheManager.build_cache_key(context.calculation_id, context.current_record)
-                cleanup_result = CacheManager.cleanup_calculation(context.calculation_id, specific_keys=[key_to_clean])
+                key_to_clean = CacheManager.build_cache_key(context.current_record, context.calculation_id)
+                cleanup_result = CacheManager.cleanup_calculation(specific_keys=[key_to_clean])
 
                 if cleanup_result.success:
                     logger.info(f"Cache cleanup successful after calculation hook for calculation {calc_id}")

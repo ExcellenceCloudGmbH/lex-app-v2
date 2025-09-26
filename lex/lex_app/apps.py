@@ -9,9 +9,9 @@ from asgiref.sync import sync_to_async
 from celery import shared_task
 from django.apps import apps
 
-from lex_app.model_utils.LexAuthentication import LexAuthentication
-from lex_app.settings import repo_name, CELERY_ACTIVE
-from lex_app.utils import GenericAppConfig
+from lex.lex_app.model_utils.LexAuthentication import LexAuthentication
+from lex.lex_app.settings import repo_name, CELERY_ACTIVE
+from lex.lex_app.utils import GenericAppConfig
 from lex.lex_app.logging.config import is_audit_logging_enabled, get_audit_logging_config
 
 
@@ -105,6 +105,12 @@ class LexAppConfig(GenericAppConfig):
 
             asyncio.run(self.async_ready(generic_app_models))
 
+    def is_running_in_celery(self):
+        # from celery import current_task
+        # if current_task and current_task.request:
+        #     return True
+        return os.getenv('IS_RUNNING_IN_CELERY', 'false') == 'true'
+
     async def async_ready(self, generic_app_models):
         """
         Check conditions and decide whether to load data asynchronously.
@@ -117,6 +123,7 @@ class LexAppConfig(GenericAppConfig):
 
         if (not running_in_uvicorn()
                 or not CELERY_ACTIVE
+                or self.is_running_in_celery()
                 or not _authentication_settings
                 or not hasattr(_authentication_settings, 'initial_data_load')
                 or not _authentication_settings.initial_data_load):
@@ -160,17 +167,18 @@ class LexAppConfig(GenericAppConfig):
                 #     print("Task will generate its own calculation ID")
                 #     traceback.print_exc()
                 #     calculation_id = None
-            
-            if (os.getenv("DEPLOYMENT_ENVIRONMENT")
+
+            # TODO
+            if False or (os.getenv("DEPLOYMENT_ENVIRONMENT")
                     and os.getenv("ARCHITECTURE") == "MQ/Worker"):
                 # Pass audit logging parameters to Celery task
                 from lex.lex_app.celery_tasks import load_data, RunInCelery
                 with RunInCelery():
-                    load_data(test, generic_app_models, audit_enabled, _authentication_settings)
+                    load_data(test, generic_app_models, audit_enabled, _authentication_settings.initial_data_load)
             else:
                 # Pass audit logging parameters to thread
                 from lex.lex_app.celery_tasks import load_data
-                x = threading.Thread(target=load_data, args=(test, generic_app_models, audit_enabled, _authentication_settings))
+                x = threading.Thread(target=load_data, args=(test, generic_app_models, audit_enabled, _authentication_settings.initial_data_load))
                 x.start()
         else:
             test.test_path = _authentication_settings.initial_data_load

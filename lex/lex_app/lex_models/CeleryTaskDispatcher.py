@@ -2,10 +2,11 @@ from copy import deepcopy
 from typing import List, Optional, Any, Dict
 import logging
 
-from lex_app.lex_models.LexErrors import CeleryDispatchError
-from lex_app.lex_models.calculated_model import calc_and_save_sync
-from lex_app.rest_api.context import operation_context, OperationContext
+from lex.lex_app.lex_models.LexErrors import CeleryDispatchError
+from lex.lex_app.lex_models.calculated_model import calc_and_save_sync
+from lex.lex_app.rest_api.context import operation_context, OperationContext
 from lex.lex_app.logging.model_context import model_logging_context, _model_context
+from lex.lex_app.celery_tasks import debug_context_in_celery
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class CeleryTaskDispatcher:
         try:
             # Import the Celery task here to avoid circular imports
             try:
-                from lex_app.celery_tasks import calc_and_save
+                from lex.lex_app.celery_tasks import calc_and_save
             except ImportError as import_error:
                 raise CeleryDispatchError(
                     f"Failed to import Celery task 'calc_and_save': {str(import_error)}",
@@ -86,24 +87,26 @@ class CeleryTaskDispatcher:
             group_mapping = {}  # Map task results to their corresponding groups
             failed_dispatch_count = 0
 
-            for i, group in enumerate(non_empty_groups):
-                try:
+            from lex.lex_app.celery_tasks import RunInCelery
+            with RunInCelery():
+                for i, group in enumerate(non_empty_groups):
+                    try:
 
-                    task_result = CeleryTaskDispatcher._dispatch_single_group(
-                        group, i, *args, context=context
-                    )
+                        task_result = CeleryTaskDispatcher._dispatch_single_group(
+                            group, i, *args, context=context
+                        )
 
-                    if task_result:
-                        task_results.append(task_result)
-                        group_mapping[task_result.id] = group
-                    else:
+                        if task_result:
+                            task_results.append(task_result)
+                            group_mapping[task_result.id] = group
+                        else:
+                            failed_dispatch_count += 1
+                            logger.warning(f"Failed to dispatch group {i + 1}, processed synchronously as fallback")
+
+                    except Exception as dispatch_error:
                         failed_dispatch_count += 1
-                        logger.warning(f"Failed to dispatch group {i + 1}, processed synchronously as fallback")
-
-                except Exception as dispatch_error:
-                    failed_dispatch_count += 1
-                    logger.error(f"Error dispatching group {i + 1}: {str(dispatch_error)}")
-                    # The _dispatch_single_group method handles synchronous fallback
+                        logger.error(f"Error dispatching group {i + 1}: {str(dispatch_error)}")
+                        # The _dispatch_single_group method handles synchronous fallback
 
             # Log dispatch statistics
             successful_dispatches = len(task_results)
@@ -193,7 +196,7 @@ class CeleryTaskDispatcher:
         logger.debug(f"Attempting to dispatch group {group_index + 1} with {group_size} models")
 
         try:
-            from lex_app.celery_tasks import calc_and_save
+            from lex.lex_app.celery_tasks import calc_and_save
         except ImportError as import_error:
             raise CeleryDispatchError(
                 f"Failed to import calc_and_save for group dispatch: {str(import_error)}",
@@ -203,12 +206,12 @@ class CeleryTaskDispatcher:
 
 
         try:
-            from lex.lex_app.celery_tasks import register_task_with_context  # Import from wherever you put this function
             request_obj = context['request_obj'] or {}
             request_obj_extracted = OperationContext.extract_info_request(request_obj)
             new_context = {**context, "request_obj": request_obj_extracted}
-            model_context = deepcopy(_model_context.get()['model_context'])
+            model_context = _model_context.get()['model_context']
             task_result = calc_and_save.delay(group, group_index, *args, context=new_context, model_context=model_context)
+            from lex.lex_app.celery_tasks import register_task_with_context  # Import from wherever you put this function
             register_task_with_context(task_result)
 
         except CeleryDispatchError as dispatch_error:

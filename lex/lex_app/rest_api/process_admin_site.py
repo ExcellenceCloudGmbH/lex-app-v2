@@ -37,8 +37,8 @@ from lex.lex_app.rest_api.views.sharepoint.SharePointPreview import SharePointPr
 from lex.lex_app.rest_api.views.sharepoint.SharePointShareLink import (
     SharePointShareLink,
 )
-from lex_app.decorators.LexSingleton import LexSingleton
-from lex_app.rest_api.views.LexLoggerView.LexLoggerView import LexLoggerView
+from lex.lex_app.decorators.LexSingleton import LexSingleton
+from lex.lex_app.rest_api.views.LexLoggerView.LexLoggerView import LexLoggerView
 from lex.lex_app.rest_api.views.model_entries.CalculationLogTreeView import (
     CalculationLogTreeView,
 )
@@ -48,6 +48,7 @@ from lex.lex_app.rest_api.views.calculations.DownloadMarkdownPdf import (
 from lex.lex_app.rest_api.views.authentication.UserPermissionView import (
     UserPermissionsView,
 )
+from lex.lex_app.rest_api.views.authentication.token_views import StreamlitTokenView
 
 
 @LexSingleton
@@ -201,6 +202,8 @@ class ProcessAdminSite:
                 ProcessStructure.as_view(processes=self.processes),
                 name="process",
             ),
+            path('api/auth/streamlit-token/', StreamlitTokenView.as_view(), name='streamlit_token'),
+
         ]
 
         url_patterns_for_react_admin = [
@@ -293,6 +296,7 @@ class ProcessAdminSite:
                 SharePointPreview.as_view(),
                 name="sharepoint-file-preview-link",
             ),
+
         ]
 
         return (

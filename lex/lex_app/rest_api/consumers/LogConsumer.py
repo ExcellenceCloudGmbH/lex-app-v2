@@ -2,7 +2,7 @@
 import json
 
 from channels.generic.websocket import AsyncWebsocketConsumer
-# from lex_app.LexLogger.LexLogger import LexLogger
+# from lex.lex_app.LexLogger.LexLogger import LexLogger
 
 
 class LogConsumer(AsyncWebsocketConsumer):

@@ -4,8 +4,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework_api_key.permissions import HasAPIKey
 
-from lex_app.lex_models.CalculationModel import CalculationModel
-from lex_app.settings import repo_name
+from lex.lex_app.lex_models.CalculationModel import CalculationModel
+from lex.lex_app.settings import repo_name
 
 
 class CleanCalculations(APIView):

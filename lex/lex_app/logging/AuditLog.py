@@ -2,7 +2,7 @@ from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from lex.lex_app.lex_models.ModificationRestrictedModelExample import AdminReportsModificationRestriction
-from lex_app.lex_models.LexModel import LexModel
+from lex.lex_app.lex_models.LexModel import LexModel
 
 class AuditLog(LexModel):
     ACTION_CHOICES = (

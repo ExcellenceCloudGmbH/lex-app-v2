@@ -54,7 +54,7 @@ class CacheManager:
         """
         try:
             cache = caches[CacheManager.CALC_CACHE_NAME]
-            print("System cache:", caches)
+            # print("System cache:", caches)
             
             # Get existing message from cache, append new message
             existing_message = cache.get(cache_key, "")

@@ -1,10 +1,58 @@
 import datetime
-from decimal import Decimal
-from uuid import UUID
-from django.db.models import Model
-from django.db.models.fields.files import FieldFile
 from django.utils.functional import Promise  # Lazy translation objects
 from django.core.files.uploadedfile import InMemoryUploadedFile
+
+
+import datetime
+from decimal import Decimal
+from uuid import UUID
+from django.forms.models import model_to_dict
+from django.db.models.fields.files import FieldFile
+from django.db.models import Model
+
+# Strict ISO 8601 without microseconds; strip tz to match 'YYYY-MM-DDTHH:MM:SS'
+def _iso_seconds(dt: datetime.datetime | None) -> str | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return dt.replace(microsecond=0).isoformat()
+
+def generic_instance_payload(instance: Model) -> dict:
+    # Concrete DB fields as base
+    field_names = [f.name for f in instance._meta.concrete_fields]
+    data = model_to_dict(instance, fields=field_names)
+    data["id"] = instance.pk
+
+    # Normalize types
+    for k, v in list(data.items()):
+        if isinstance(v, datetime.datetime):
+            data[k] = _iso_seconds(v)
+        elif isinstance(v, datetime.date):
+            data[k] = v.isoformat()
+        elif isinstance(v, datetime.time):
+            data[k] = v.replace(microsecond=0).isoformat()
+        elif isinstance(v, Decimal):
+            data[k] = str(v)
+        elif isinstance(v, UUID):
+            data[k] = str(v)
+        elif isinstance(v, FieldFile):
+            data[k] = {"name": v.name, "url": getattr(v, "url", None)}
+        # ForeignKeys are already pk values via model_to_dict
+
+    # Common computed attribute if present
+    if "name" not in data and hasattr(instance, "name"):
+        try:
+            val = getattr(instance, "name")
+            if isinstance(val, (str, int, float)):
+                data["name"] = val
+        except Exception:
+            pass
+
+    return data
+
+
+
 
 def _serialize_payload(data):
     """

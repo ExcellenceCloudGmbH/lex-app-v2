@@ -1,8 +1,8 @@
 from typing import Dict, Any, Set, Type, Union
 from django.db.models import Model
 
-from lex_app.rest_api.model_collection.model_container import ModelContainer
-from lex_app.rest_api.model_collection.utils import enrich_model_structure_with_readable_names_and_types
+from lex.lex_app.rest_api.model_collection.model_container import ModelContainer
+from lex.lex_app.rest_api.model_collection.utils import enrich_model_structure_with_readable_names_and_types
 
 
 def _create_model_containers(models_to_admins: Dict[Type[Model], Any]) -> Dict[str, ModelContainer]:

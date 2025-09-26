@@ -151,7 +151,7 @@ class ProcessStructure(APIView):
 # from rest_framework_api_key.permissions import HasAPIKey
 #
 # from lex.lex_app.rest_api.model_collection.model_collection import ModelCollection
-# from lex_app.rest_api.views.authentication.KeycloakManager import KeycloakManager
+# from lex.lex_app.rest_api.views.authentication.KeycloakManager import KeycloakManager
 #
 #
 # class ModelStructureObtainView(APIView):

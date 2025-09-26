@@ -1,8 +1,8 @@
 from django.db.models import Model
 
-from lex_app.lex_models.Process import Process
-from lex_app.lex_models.html_report import HTMLReport
-from lex_app.rest_api.model_collection.constants import RELATION_FIELD_TYPES
+from lex.lex_app.lex_models.Process import Process
+from lex.lex_app.lex_models.html_report import HTMLReport
+from lex.lex_app.rest_api.model_collection.constants import RELATION_FIELD_TYPES
 
 
 # TODO: 2

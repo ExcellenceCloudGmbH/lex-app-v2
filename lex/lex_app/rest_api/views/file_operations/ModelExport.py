@@ -11,7 +11,7 @@ from rest_framework_api_key.permissions import HasAPIKey
 
 from lex.lex_app.rest_api.generic_filters import UserReadRestrictionFilterBackend, ForeignKeyFilterBackend
 from lex.lex_app.rest_api.views.model_entries.filter_backends import PrimaryKeyListFilterBackend
-from lex_app.rest_api.model_collection.utils import get_relation_fields
+from lex.lex_app.rest_api.model_collection.utils import get_relation_fields
 
 
 class ModelExportView(GenericAPIView):

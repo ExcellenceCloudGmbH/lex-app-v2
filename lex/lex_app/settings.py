@@ -70,30 +70,29 @@ GRAPH_MODELS = {
 
 ASGI_APPLICATION = "lex_app.asgi.application"
 
-if os.getenv("DEPLOYMENT_ENVIRONMENT") is None:
-    CHANNEL_LAYERS = {
-        "default": {
-            "BACKEND": "channels.layers.InMemoryChannelLayer",
+# if os.getenv("DEPLOYMENT_ENVIRONMENT") is None:
+#     CHANNEL_LAYERS = {
+#         "default": {
+#             "BACKEND": "channels.layers.InMemoryChannelLayer",
+#         },
+#     }
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels_redis.pubsub.RedisPubSubChannelLayer",
+        "CONFIG": {
+            "hosts": [
+                (
+                    f"redis://{os.getenv('REDIS_USERNAME')}:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}/2"
+                    if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
+                    else "redis://127.0.0.1:6379/2"
+                )
+            ],
+            "capacity": 100000,
+            "expiry": 10,
+            "prefix": f"{os.getenv('INSTANCE_RESOURCE_IDENTIFIER', 'local')}:",
         },
-    }
-else:
-    CHANNEL_LAYERS = {
-        "default": {
-            "BACKEND": "channels_redis.pubsub.RedisPubSubChannelLayer",
-            "CONFIG": {
-                "hosts": [
-                    (
-                        f"redis://{os.getenv('REDIS_USERNAME')}:{os.getenv('REDIS_PASSWORD')}@{os.getenv('REDIS_HOST')}/2"
-                        if os.getenv("DEPLOYMENT_ENVIRONMENT") is not None
-                        else "redis://127.0.0.1:6379/2"
-                    )
-                ],
-                "capacity": 100000,
-                "expiry": 10,
-                "prefix": f"{os.getenv('INSTANCE_RESOURCE_IDENTIFIER', 'local')}:",
-            },
-        },
-    }
+    },
+}
 
 STORAGES = {
     "default": {
@@ -603,6 +602,8 @@ CORS_ALLOWED_ORIGINS = [
 
 JWT_SECRET_KEY = SECRET_KEY
 JWT_ALGORITHM = 'HS256'
+JWT_ACCESS_TOKEN_LIFETIME = timedelta(minutes=5)  # Short-lived
+JWT_REFRESH_GRACE_PERIOD = timedelta(minutes=10)  # Grace period for refresh
 JWT_EXPIRATION_HOURS = 2
 
 

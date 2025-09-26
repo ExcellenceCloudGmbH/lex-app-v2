@@ -17,7 +17,7 @@ class BulkAuditLogMixin:
         user = self.request.user if hasattr(self.request, 'user') else None
         resource = target.__name__.lower() if isinstance(target, type) else target.__class__.__name__.lower()
         audit_log = AuditLog.objects.create(
-            author=f"{str(user)} ({user.username})" if user else None,
+            author=f"{str(user)}" if user else None,
             resource=resource,
             action=action,
             payload=payload,
@@ -78,6 +78,7 @@ class BulkAuditLogMixin:
             queryset.delete()
             # TODO: Test
             for audit_log, instance in zip(audit_logs, instances):
+                updated_payload = _serialize_payload(self.get_serializer(instance).data)
                 audit_log.content_type = ContentType.objects.get_for_model(instance.__class__)
                 audit_log.object_id = instance.pk
                 audit_log.payload = updated_payload

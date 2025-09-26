@@ -64,3 +64,89 @@ def convert_dfs_in_excel(path, data_frames, sheet_names=None, merge_cells=False,
     # Save the Excel file contents to the specified path
     with default_storage.open(path, 'wb') as output_excel_file:
         output_excel_file.write(excel_file_contents)
+
+
+
+from datetime import datetime, date, time
+from uuid import UUID
+from decimal import Decimal
+from django.apps import apps
+from django.db.models import Model
+from django.db.models.fields import DateTimeField, DateField, TimeField
+
+ISO_PARSE = ("%Y-%m-%dT%H:%M:%S",)
+
+def _parse_value(field, value):
+    if value is None:
+        return None
+    if isinstance(field, DateTimeField):
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            return None
+    if isinstance(field, DateField):
+        try:
+            return date.fromisoformat(value)
+        except Exception:
+            return None
+    if isinstance(field, TimeField):
+        try:
+            return time.fromisoformat(value)
+        except Exception:
+            return None
+    # Accept JSON primitives for other field types; Decimal/UUID as strings
+    if isinstance(value, str):
+        try:
+            return UUID(value)
+        except Exception:
+            pass
+        try:
+            return Decimal(value)
+        except Exception:
+            pass
+    return value
+
+def resolve_target_model(auditlog):
+    # Prefer content_type when present
+    ct = getattr(auditlog, "content_type", None)
+    if ct:
+        try:
+            return ct.model_class()
+        except Exception:
+            pass
+    # Fallback: map resource (lowercased model name) to a concrete model class
+    resource = getattr(auditlog, "resource", None)
+    if resource:
+        for model in apps.get_models():
+            if model._meta.model_name.lower() == resource.lower():
+                return model
+    return None
+
+def build_shadow_instance(model_class: type[Model], payload: dict) -> Model | None:
+    try:
+        field_map = {f.name: f for f in model_class._meta.concrete_fields}
+        init_kwargs = {}
+        for key, val in (payload or {}).items():
+            if key in field_map:
+                init_kwargs[key] = _parse_value(field_map[key], val)
+        # Ensure primary key if provided; Django accepts pk=name or explicit id field
+        if model_class._meta.pk.name in payload:
+            init_kwargs[model_class._meta.pk.name] = payload[model_class._meta.pk.name]
+        return model_class(**init_kwargs)
+    except Exception:
+        return None
+
+def can_read_from_payload(request, auditlog) -> bool:
+    model_class = resolve_target_model(auditlog)
+    if not model_class:
+        return True  # preserve allow-by-default behavior
+    instance = build_shadow_instance(model_class, getattr(auditlog, "payload", None))
+    if instance is None:
+        return True  # preserve allow-by-default behavior
+    fn = getattr(instance, "can_read", None)
+    if not callable(fn):
+        return True  # preserve allow-by-default behavior
+    try:
+        return bool(fn(request))
+    except Exception:
+        return True  # preserve allow-by-default behavior
